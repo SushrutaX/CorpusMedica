@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent } from "react";
 
 type Model = {
@@ -17,10 +17,19 @@ type ModelsResponse = {
   models: Model[];
 };
 
-type UploadResponse = {
+type UploadSingleResponse = {
   filename: string;
   saved_path: string;
+  kind?: string;
 };
+
+type UploadBatchResponse = {
+  filenames: string[];
+  saved_path: string;
+  kind: string;
+};
+
+type UploadResponse = UploadSingleResponse | UploadBatchResponse;
 
 type SegmentResponse = {
   job_id: string;
@@ -41,6 +50,31 @@ type ResultsResponse = {
     report_path: string;
   };
   error_message?: string | null;
+};
+
+type UploadPreview = {
+  kind: string;
+  files?: Array<{
+    name: string;
+    shape?: number[];
+    zooms?: number[];
+    dtype?: string;
+  }>;
+  dicom?: {
+    slices?: number;
+    rows?: number;
+    cols?: number;
+    pixel_spacing?: number[] | null;
+    slice_thickness?: number | null;
+    modality?: string;
+  };
+  warnings?: string[];
+};
+
+type VolumeInfo = {
+  shape: number[];
+  channels: number;
+  zooms?: number[];
 };
 
 type JobHistoryItem = {
@@ -65,20 +99,108 @@ type Notice = {
   message: string;
 };
 
+type AxisKey = "sagittal" | "coronal" | "axial";
+
+type SliceIndex = Record<AxisKey, number>;
+
+type ViewerMode = "2d" | "3d";
+type SliceColorMap = "grayscale" | "bone" | "hot" | "cool" | "viridis";
+type VolumeColorMap =
+  | "radiance"
+  | "grayscale"
+  | "bone"
+  | "hot"
+  | "cool"
+  | "viridis";
+
 const API_BASE: string =
   (import.meta.env.VITE_API_BASE_URL as string) || "http://localhost:8000";
 
 const SKELETONS = Array.from({ length: 3 }, (_, index) => index);
 const buildDownloadUrl = (path: string) =>
   `${API_BASE}/api/download?path=${encodeURIComponent(path)}`;
+const enable3DViewer =
+  ((import.meta.env.VITE_ENABLE_3D_VIEWER as string) ?? "true") === "true";
+const SLICE_COLORMAPS: Array<{ id: SliceColorMap; label: string }> = [
+  { id: "grayscale", label: "Grayscale" },
+  { id: "bone", label: "Bone" },
+  { id: "hot", label: "Hot" },
+  { id: "cool", label: "Cool" },
+  { id: "viridis", label: "Viridis" },
+];
+const VOLUME_COLORMAPS: Array<{ id: VolumeColorMap; label: string }> = [
+  { id: "radiance", label: "Radiance" },
+  { id: "grayscale", label: "Grayscale" },
+  { id: "bone", label: "Bone" },
+  { id: "hot", label: "Hot" },
+  { id: "cool", label: "Cool" },
+  { id: "viridis", label: "Viridis" },
+];
+const VOLUME_COLOR_STOPS: Record<
+  VolumeColorMap,
+  Array<[number, [number, number, number]]>
+> = {
+  radiance: [
+    [0, [0.0, 0.0, 0.0]],
+    [0.5, [0.55, 0.7, 0.95]],
+    [0.85, [0.95, 0.55, 0.35]],
+    [1, [1.0, 1.0, 1.0]],
+  ],
+  grayscale: [
+    [0, [0.0, 0.0, 0.0]],
+    [1, [1.0, 1.0, 1.0]],
+  ],
+  bone: [
+    [0, [0.0, 0.0, 0.0]],
+    [0.4, [0.55, 0.62, 0.7]],
+    [0.8, [0.85, 0.9, 0.95]],
+    [1, [1.0, 1.0, 1.0]],
+  ],
+  hot: [
+    [0, [0.0, 0.0, 0.0]],
+    [0.3, [0.8, 0.0, 0.0]],
+    [0.6, [1.0, 0.6, 0.0]],
+    [1, [1.0, 1.0, 1.0]],
+  ],
+  cool: [
+    [0, [0.0, 1.0, 1.0]],
+    [1, [1.0, 0.0, 1.0]],
+  ],
+  viridis: [
+    [0, [0.267, 0.004, 0.329]],
+    [0.25, [0.283, 0.141, 0.458]],
+    [0.5, [0.254, 0.265, 0.53]],
+    [0.75, [0.163, 0.471, 0.558]],
+    [1, [0.993, 0.906, 0.144]],
+  ],
+};
 
 export default function App() {
   const [models, setModels] = useState<Model[]>([]);
   const [modelsLoading, setModelsLoading] = useState<boolean>(false);
   const [selectedModelId, setSelectedModelId] = useState<string>("");
-  const [file, setFile] = useState<File | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
   const [uploadResult, setUploadResult] = useState<UploadResponse | null>(null);
   const [uploading, setUploading] = useState<boolean>(false);
+  const [uploadPreview, setUploadPreview] = useState<UploadPreview | null>(null);
+  const [volumeInfo, setVolumeInfo] = useState<VolumeInfo | null>(null);
+  const [viewerLoading, setViewerLoading] = useState<boolean>(false);
+  const [viewerError, setViewerError] = useState<string>("");
+  const [viewerMode, setViewerMode] = useState<ViewerMode>(
+    enable3DViewer ? "3d" : "2d"
+  );
+  const [viewer3dLoading, setViewer3dLoading] = useState<boolean>(false);
+  const [viewer3dError, setViewer3dError] = useState<string>("");
+  const [sliceColormap, setSliceColormap] =
+    useState<SliceColorMap>("grayscale");
+  const [volumeColormap, setVolumeColormap] =
+    useState<VolumeColorMap>("radiance");
+  const [sliceIndex, setSliceIndex] = useState<SliceIndex>({
+    sagittal: 0,
+    coronal: 0,
+    axial: 0,
+  });
+  const [viewerChannel, setViewerChannel] = useState<number>(0);
   const [jobId, setJobId] = useState<string>("");
   const [jobStatus, setJobStatus] = useState<JobStatus | null>(null);
   const [jobResult, setJobResult] = useState<ResultsResponse | null>(null);
@@ -87,6 +209,9 @@ export default function App() {
   const [historyLoading, setHistoryLoading] = useState<boolean>(false);
   const [historyError, setHistoryError] = useState<string>("");
   const [notices, setNotices] = useState<Notice[]>([]);
+
+  const viewerRef = useRef<HTMLDivElement | null>(null);
+  const viewerCleanupRef = useRef<(() => void) | null>(null);
 
   const selectedModel = useMemo(
     () => models.find((model) => model.id === selectedModelId) || null,
@@ -97,6 +222,7 @@ export default function App() {
     [models]
   );
   const recentJobs = useMemo(() => jobHistory.slice(0, 6), [jobHistory]);
+  const uploadPath = uploadResult?.saved_path ?? "";
 
   const pushNotice = useCallback(
     (type: Notice["type"], title: string, message: string) => {
@@ -165,6 +291,376 @@ export default function App() {
       loadHistory();
     }
   }, [jobStatus, loadHistory]);
+
+  const fetchVolumeInfo = useCallback(async (path: string) => {
+    try {
+      setViewerError("");
+      setViewerLoading(true);
+      const res = await fetch(
+        `${API_BASE}/api/uploads/volume-info?path=${encodeURIComponent(path)}`
+      );
+      if (!res.ok) throw new Error(`Viewer API failed (${res.status})`);
+      const data = (await res.json()) as VolumeInfo;
+      setVolumeInfo(data);
+    } catch (e: unknown) {
+      const message =
+        e instanceof Error ? e.message : "Failed to load volume metadata.";
+      setViewerError(message);
+      setVolumeInfo(null);
+    } finally {
+      setViewerLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!uploadPath) {
+      setVolumeInfo(null);
+      setViewerError("");
+      return;
+    }
+    fetchVolumeInfo(uploadPath);
+  }, [fetchVolumeInfo, uploadPath]);
+
+  useEffect(() => {
+    if (!volumeInfo || volumeInfo.shape.length < 3) return;
+    setSliceIndex({
+      sagittal: Math.floor(volumeInfo.shape[0] / 2),
+      coronal: Math.floor(volumeInfo.shape[1] / 2),
+      axial: Math.floor(volumeInfo.shape[2] / 2),
+    });
+    setViewerChannel(0);
+  }, [volumeInfo]);
+
+  const buildVolumeFileUrl = useCallback(() => {
+    if (!uploadPath) return "";
+    const params = new URLSearchParams({
+      path: uploadPath,
+      channel: String(viewerChannel),
+      t: String(Date.now()),
+    });
+    return `${API_BASE}/api/uploads/volume-file?${params.toString()}`;
+  }, [uploadPath, viewerChannel]);
+
+  useEffect(() => {
+    if (!enable3DViewer || viewerMode !== "3d") {
+      if (viewerCleanupRef.current) {
+        viewerCleanupRef.current();
+        viewerCleanupRef.current = null;
+      }
+      setViewer3dLoading(false);
+      setViewer3dError("");
+      return;
+    }
+    if (!uploadPath || !viewerRef.current) {
+      if (viewerCleanupRef.current) {
+        viewerCleanupRef.current();
+        viewerCleanupRef.current = null;
+      }
+      setViewer3dLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setViewer3dError("");
+    setViewer3dLoading(true);
+
+    const container = viewerRef.current;
+    container.replaceChildren();
+
+    const initViewer = async () => {
+      try {
+        // @ts-expect-error vtk.js has no bundled types
+        const vtkRenderWindowModule = await import(
+          "vtk.js/Sources/Rendering/Core/RenderWindow"
+        );
+        // @ts-expect-error vtk.js has no bundled types
+        const vtkRendererModule = await import(
+          "vtk.js/Sources/Rendering/Core/Renderer"
+        );
+        // @ts-expect-error vtk.js has no bundled types
+        await import("vtk.js/Sources/Rendering/OpenGL/Renderer");
+        // @ts-expect-error vtk.js has no bundled types
+        await import("vtk.js/Sources/Rendering/OpenGL/Camera");
+        // @ts-expect-error vtk.js has no bundled types
+        const vtkOpenGLRenderWindowModule = await import(
+          "vtk.js/Sources/Rendering/OpenGL/RenderWindow"
+        );
+        // @ts-expect-error vtk.js has no bundled types
+        await import("vtk.js/Sources/Rendering/OpenGL/Volume");
+        // @ts-expect-error vtk.js has no bundled types
+        await import("vtk.js/Sources/Rendering/OpenGL/VolumeMapper");
+        // @ts-expect-error vtk.js has no bundled types
+        const vtkRenderWindowInteractorModule = await import(
+          "vtk.js/Sources/Rendering/Core/RenderWindowInteractor"
+        );
+        // @ts-expect-error vtk.js has no bundled types
+        const vtkInteractorStyleTrackballCameraModule = await import(
+          "vtk.js/Sources/Interaction/Style/InteractorStyleTrackballCamera"
+        );
+        // @ts-expect-error vtk.js has no bundled types
+        const vtkVolumeModule = await import(
+          "vtk.js/Sources/Rendering/Core/Volume"
+        );
+        // @ts-expect-error vtk.js has no bundled types
+        const vtkVolumeMapperModule = await import(
+          "vtk.js/Sources/Rendering/Core/VolumeMapper"
+        );
+        // @ts-expect-error vtk.js has no bundled types
+        const vtkColorTransferFunctionModule = await import(
+          "vtk.js/Sources/Rendering/Core/ColorTransferFunction"
+        );
+        // @ts-expect-error vtk.js has no bundled types
+        const vtkPiecewiseFunctionModule = await import(
+          "vtk.js/Sources/Common/DataModel/PiecewiseFunction"
+        );
+        // @ts-expect-error vtk.js has no bundled types
+        const vtkImageDataModule = await import(
+          "vtk.js/Sources/Common/DataModel/ImageData"
+        );
+        // @ts-expect-error vtk.js has no bundled types
+        const vtkDataArrayModule = await import(
+          "vtk.js/Sources/Common/Core/DataArray"
+        );
+        // @ts-expect-error nifti-reader-js has no bundled types
+        const niftiModule = await import("nifti-reader-js");
+
+        if (cancelled) return;
+
+        const vtkRenderWindow = vtkRenderWindowModule.default;
+        const vtkRenderer = vtkRendererModule.default;
+        const vtkOpenGLRenderWindow = vtkOpenGLRenderWindowModule.default;
+        const vtkRenderWindowInteractor =
+          vtkRenderWindowInteractorModule.default;
+        const vtkInteractorStyleTrackballCamera =
+          vtkInteractorStyleTrackballCameraModule.default;
+        const vtkVolume = vtkVolumeModule.default;
+        const vtkVolumeMapper = vtkVolumeMapperModule.default;
+        const vtkColorTransferFunction =
+          vtkColorTransferFunctionModule.default;
+        const vtkPiecewiseFunction = vtkPiecewiseFunctionModule.default;
+        const vtkImageData = vtkImageDataModule.default;
+        const vtkDataArray = vtkDataArrayModule.default;
+        const nifti = niftiModule;
+
+        const renderWindow = vtkRenderWindow.newInstance();
+        const renderer = vtkRenderer.newInstance();
+        renderWindow.addRenderer(renderer);
+
+        const openGLRenderWindow = vtkOpenGLRenderWindow.newInstance();
+        openGLRenderWindow.setContainer(container);
+        renderWindow.addView(openGLRenderWindow);
+
+        const interactor = vtkRenderWindowInteractor.newInstance();
+        interactor.setView(openGLRenderWindow);
+        interactor.setInteractorStyle(
+          vtkInteractorStyleTrackballCamera.newInstance()
+        );
+        interactor.initialize();
+        interactor.bindEvents(container);
+
+        renderer.setBackground(0.97, 0.98, 1);
+
+        const response = await fetch(buildVolumeFileUrl());
+        if (!response.ok) {
+          throw new Error(`Volume download failed (${response.status})`);
+        }
+        const arrayBuffer = await response.arrayBuffer();
+        let buffer = arrayBuffer;
+        if (nifti.isCompressed(buffer)) {
+          buffer = nifti.decompress(buffer);
+        }
+        if (!nifti.isNIFTI(buffer)) {
+          throw new Error("Unsupported volume file format.");
+        }
+        const header = nifti.readHeader(buffer);
+        const image = nifti.readImage(header, buffer);
+
+        const toFloat32 = () => {
+          const datatype = header.datatypeCode;
+          const slope =
+            typeof header.scl_slope === "number" && header.scl_slope !== 0
+              ? header.scl_slope
+              : 1;
+          const intercept =
+            typeof header.scl_inter === "number" ? header.scl_inter : 0;
+
+          const volumeSize =
+            Number(header.dims[1]) *
+            Number(header.dims[2]) *
+            Number(header.dims[3]);
+
+          const makeArray = () => {
+            switch (datatype) {
+              case nifti.NIFTI1.TYPE_UINT8:
+                return new Uint8Array(image);
+              case nifti.NIFTI1.TYPE_INT16:
+                return new Int16Array(image);
+              case nifti.NIFTI1.TYPE_INT32:
+                return new Int32Array(image);
+              case nifti.NIFTI1.TYPE_FLOAT32:
+                return new Float32Array(image);
+              case nifti.NIFTI1.TYPE_FLOAT64:
+                return new Float64Array(image);
+              case nifti.NIFTI1.TYPE_INT8:
+                return new Int8Array(image);
+              case nifti.NIFTI1.TYPE_UINT16:
+                return new Uint16Array(image);
+              case nifti.NIFTI1.TYPE_UINT32:
+                return new Uint32Array(image);
+              case nifti.NIFTI1.TYPE_INT64:
+                return new BigInt64Array(image);
+              case nifti.NIFTI1.TYPE_UINT64:
+                return new BigUint64Array(image);
+              default:
+                throw new Error(`Unsupported NIfTI datatype: ${datatype}`);
+            }
+          };
+
+          const rawArray = makeArray();
+          const sliced =
+            rawArray.length > volumeSize
+              ? rawArray.subarray(0, volumeSize)
+              : rawArray;
+
+          if (
+            rawArray instanceof Float32Array &&
+            slope === 1 &&
+            intercept === 0
+          ) {
+            return sliced as Float32Array;
+          }
+
+          const floatArray = new Float32Array(sliced.length);
+          for (let i = 0; i < sliced.length; i += 1) {
+            const value = sliced[i] as number | bigint;
+            const numeric =
+              typeof value === "bigint" ? Number(value) : value;
+            floatArray[i] = numeric * slope + intercept;
+          }
+          return floatArray;
+        };
+
+        const voxelData = toFloat32();
+        const dimensions = [
+          Number(header.dims[1]),
+          Number(header.dims[2]),
+          Number(header.dims[3]),
+        ];
+        const spacing = [
+          Number(header.pixDims[1] || 1),
+          Number(header.pixDims[2] || 1),
+          Number(header.pixDims[3] || 1),
+        ];
+
+        const imageData = vtkImageData.newInstance();
+        imageData.setDimensions(...dimensions);
+        imageData.setSpacing(...spacing);
+        const scalars = vtkDataArray.newInstance({
+          name: "Scalars",
+          numberOfComponents: 1,
+          values: voxelData,
+        });
+        imageData.getPointData().setScalars(scalars);
+        const dataRange = scalars.getRange();
+
+        const volumeMapper = vtkVolumeMapper.newInstance();
+        volumeMapper.setSampleDistance(0.7);
+        volumeMapper.setInputData(imageData);
+
+        const volume = vtkVolume.newInstance();
+        volume.setMapper(volumeMapper);
+
+        const ctfun = vtkColorTransferFunction.newInstance();
+        const ofun = vtkPiecewiseFunction.newInstance();
+
+        const min = dataRange[0];
+        const max = dataRange[1];
+        const range = max - min || 1;
+        const mid = min + range * 0.5;
+        const hi = min + range * 0.85;
+
+        const colorStops =
+          VOLUME_COLOR_STOPS[volumeColormap] ?? VOLUME_COLOR_STOPS.radiance;
+        colorStops.forEach(([stop, color]) => {
+          const value = min + range * stop;
+          ctfun.addRGBPoint(value, color[0], color[1], color[2]);
+        });
+
+        ofun.addPoint(min, 0.0);
+        ofun.addPoint(mid, 0.05);
+        ofun.addPoint(hi, 0.25);
+        ofun.addPoint(max, 0.9);
+
+        const property = volume.getProperty();
+        property.setRGBTransferFunction(0, ctfun);
+        property.setScalarOpacity(0, ofun);
+        property.setInterpolationTypeToLinear();
+        property.setShade(true);
+        property.setAmbient(0.2);
+        property.setDiffuse(0.7);
+        property.setSpecular(0.2);
+        property.setScalarOpacityUnitDistance(0, 0.9);
+
+        renderer.addVolume(volume);
+        renderer.resetCamera();
+
+        const resize = () => {
+          const bounds = container.getBoundingClientRect();
+          const dpr = window.devicePixelRatio || 1;
+          openGLRenderWindow.setSize(
+            Math.max(1, Math.floor(bounds.width * dpr)),
+            Math.max(1, Math.floor(bounds.height * dpr))
+          );
+          renderWindow.render();
+        };
+
+        const resizeObserver =
+          "ResizeObserver" in window
+            ? new ResizeObserver(resize)
+            : null;
+        if (resizeObserver) {
+          resizeObserver.observe(container);
+        } else {
+          window.addEventListener("resize", resize);
+        }
+        resize();
+
+        viewerCleanupRef.current = () => {
+          resizeObserver?.disconnect();
+          window.removeEventListener("resize", resize);
+          try {
+            interactor.unbindEvents();
+            interactor.delete();
+            openGLRenderWindow.delete();
+            renderer.delete();
+            renderWindow.delete();
+          } catch {
+            // no-op
+          }
+          container.replaceChildren();
+        };
+      } catch (e: unknown) {
+        if (cancelled) return;
+        const message =
+          e instanceof Error ? e.message : "Failed to initialize 3D viewer.";
+        setViewer3dError(message);
+      } finally {
+        if (!cancelled) {
+          setViewer3dLoading(false);
+        }
+      }
+    };
+
+    void initViewer();
+
+    return () => {
+      cancelled = true;
+      if (viewerCleanupRef.current) {
+        viewerCleanupRef.current();
+        viewerCleanupRef.current = null;
+      }
+    };
+  }, [viewerMode, uploadPath, viewerChannel, volumeColormap, buildVolumeFileUrl]);
 
   useEffect(() => {
     if (!jobId) return undefined;
@@ -241,15 +737,82 @@ export default function App() {
     ? jobStatus.charAt(0).toUpperCase() + jobStatus.slice(1)
     : "Idle";
 
+  const inferFileKind = (name: string): string => {
+    const lower = name.toLowerCase();
+    if (lower.endsWith(".nii") || lower.endsWith(".nii.gz")) return "nifti";
+    if (lower.endsWith(".dcm")) return "dicom";
+    if (lower.endsWith(".zip")) return "zip";
+    return "unknown";
+  };
+
+  const selectedFileCount = files.length;
+  const selectedFileNames = files.map((item) => item.name);
+  const selectionKinds = useMemo(
+    () => Array.from(new Set(files.map((item) => inferFileKind(item.name)))),
+    [files]
+  );
+  const selectionLabel = useMemo(() => {
+    if (selectedFileCount === 0) return "No files selected";
+    if (selectedFileCount === 1) return selectedFileNames[0];
+    return `${selectedFileCount} files selected`;
+  }, [selectedFileCount, selectedFileNames]);
+  const selectionWarning = useMemo(() => {
+    if (selectedFileCount <= 1) return "";
+    if (selectionKinds.includes("zip")) {
+      return "Zip files must be uploaded one at a time.";
+    }
+    if (selectionKinds.includes("unknown")) {
+      return "Some files have unsupported extensions.";
+    }
+    if (selectionKinds.length > 1) {
+      return "Do not mix NIfTI and DICOM files in the same batch.";
+    }
+    return "";
+  }, [selectedFileCount, selectionKinds]);
+
+  const axisSizes = useMemo(() => {
+    if (!volumeInfo) return null;
+    return {
+      sagittal: volumeInfo.shape[0] ?? 0,
+      coronal: volumeInfo.shape[1] ?? 0,
+      axial: volumeInfo.shape[2] ?? 0,
+    };
+  }, [volumeInfo]);
+
+  const channelLabels = useMemo(() => {
+    const names = uploadPreview?.files?.map((item) => item.name) ?? [];
+    return names;
+  }, [uploadPreview]);
+
+  const buildSliceUrl = useCallback(
+    (axis: AxisKey, index: number) => {
+      if (!uploadPath) return "";
+      const params = new URLSearchParams({
+        path: uploadPath,
+        axis,
+        index: String(index),
+        channel: String(viewerChannel),
+        colormap: sliceColormap,
+      });
+      return `${API_BASE}/api/uploads/slice?${params.toString()}`;
+    },
+    [uploadPath, viewerChannel, sliceColormap]
+  );
+
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
-    const nextFile = event.target.files?.[0] || null;
-    setFile(nextFile);
+    const selected = Array.from(event.target.files ?? []);
+    setFiles(selected);
     setUploadResult(null);
+    setUploadPreview(null);
+    setVolumeInfo(null);
+    setViewerError("");
     setJobId("");
     setJobStatus(null);
     setJobResult(null);
-    if (nextFile) {
-      pushNotice("info", "Scan selected", `${nextFile.name} ready to upload.`);
+    if (selected.length > 0) {
+      const name =
+        selected.length === 1 ? selected[0].name : `${selected.length} files`;
+      pushNotice("info", "Scan selected", `${name} ready to upload.`);
     }
   };
 
@@ -270,9 +833,14 @@ export default function App() {
   };
 
   const handleUpload = async () => {
-    if (!file) {
+    if (files.length === 0) {
       setError("Please select a file first.");
       pushNotice("error", "Upload blocked", "Select a scan file to upload.");
+      return;
+    }
+    if (selectionWarning) {
+      setError(selectionWarning);
+      pushNotice("error", "Upload blocked", selectionWarning);
       return;
     }
 
@@ -281,9 +849,14 @@ export default function App() {
       setUploading(true);
 
       const form = new FormData();
-      form.append("file", file);
+      if (files.length === 1) {
+        form.append("file", files[0]);
+      } else {
+        files.forEach((item) => form.append("files", item));
+      }
 
-      const res = await fetch(`${API_BASE}/api/uploads`, {
+      const endpoint = files.length === 1 ? "/api/uploads" : "/api/uploads/batch";
+      const res = await fetch(`${API_BASE}${endpoint}`, {
         method: "POST",
         body: form,
       });
@@ -292,7 +865,19 @@ export default function App() {
 
       const data = (await res.json()) as UploadResponse;
       setUploadResult(data);
+      setUploadPreview(null);
       pushNotice("success", "Upload complete", "Scan saved successfully.");
+
+      const savedPath = "saved_path" in data ? data.saved_path : "";
+      if (savedPath) {
+        const previewRes = await fetch(
+          `${API_BASE}/api/uploads/preview?path=${encodeURIComponent(savedPath)}`
+        );
+        if (previewRes.ok) {
+          const preview = (await previewRes.json()) as UploadPreview;
+          setUploadPreview(preview);
+        }
+      }
     } catch (e: unknown) {
       const message = e instanceof Error ? e.message : "Upload failed";
       setError(message);
@@ -474,37 +1059,53 @@ export default function App() {
           </span>
         </div>
 
-        <div className={`dropzone ${file ? "has-file" : ""}`}>
+        <div className={`dropzone ${files.length > 0 ? "has-file" : ""}`}>
           <input
             id="scan-upload"
             className="file-input"
             type="file"
             onChange={handleFileChange}
+            multiple
           />
           <label htmlFor="scan-upload">
             <div className="dropzone-main">
               <span className="dropzone-title">
-                {file ? file.name : "Drop scan file here"}
+                {selectedFileCount > 0 ? selectionLabel : "Drop scan file here"}
               </span>
               <span className="dropzone-subtitle">
-                {file
-                  ? "Ready to upload"
-                  : "NIfTI (.nii/.nii.gz) or zipped DICOM series"}
+                {selectedFileCount > 0
+                  ? selectionWarning || "Ready to upload"
+                  : "NIfTI (.nii/.nii.gz), DICOM series, or zipped scans"}
               </span>
             </div>
             <div className="dropzone-chips">
               <span className="chip">Drag and drop</span>
-              <span className="chip">Max 500MB</span>
+              <span className="chip">Multi-file support</span>
             </div>
           </label>
         </div>
+
+        {selectedFileCount > 1 && (
+          <div className="file-list">
+            {selectedFileNames.slice(0, 6).map((name) => (
+              <span key={name} className="file-pill">
+                {name}
+              </span>
+            ))}
+            {selectedFileCount > 6 && (
+              <span className="file-pill muted">
+                +{selectedFileCount - 6} more
+              </span>
+            )}
+          </div>
+        )}
 
         <div className="upload-actions">
           <button
             type="button"
             className="btn btn-primary"
             onClick={handleUpload}
-            disabled={!file || uploading}
+            disabled={files.length === 0 || uploading || Boolean(selectionWarning)}
           >
             {uploading ? "Uploading..." : uploadResult ? "Re-upload" : "Upload scan"}
           </button>
@@ -515,6 +1116,324 @@ export default function App() {
             </div>
           )}
         </div>
+
+        {uploadPreview && (
+          <div className="preview-card">
+            <div className="preview-head">
+              <div>
+                <div className="preview-title">Data preview</div>
+                <div className="preview-subtitle">
+                  {uploadPreview.kind.replace(/_/g, " ")}
+                </div>
+              </div>
+              {uploadPreview.warnings && uploadPreview.warnings.length > 0 && (
+                <span className="status-badge status-queued">
+                  {uploadPreview.warnings.length} warning
+                  {uploadPreview.warnings.length > 1 ? "s" : ""}
+                </span>
+              )}
+            </div>
+
+            {uploadPreview.files && uploadPreview.files.length > 0 && (
+              <div className="preview-grid">
+                {uploadPreview.files.map((item) => (
+                  <div className="preview-item" key={item.name}>
+                    <div className="preview-name">{item.name}</div>
+                    {item.shape && (
+                      <div className="preview-meta">
+                        Shape: {item.shape.join(" x ")}
+                      </div>
+                    )}
+                    {item.zooms && (
+                      <div className="preview-meta">
+                        Spacing: {item.zooms.map((value) => value.toFixed(2)).join(", ")}
+                      </div>
+                    )}
+                    {item.dtype && (
+                      <div className="preview-meta">Type: {item.dtype}</div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {uploadPreview.dicom && (
+              <div className="preview-grid">
+                <div className="preview-item">
+                  <div className="preview-name">DICOM series</div>
+                  {"slices" in uploadPreview.dicom && (
+                    <div className="preview-meta">
+                      Slices: {uploadPreview.dicom.slices ?? "n/a"}
+                    </div>
+                  )}
+                  {"rows" in uploadPreview.dicom &&
+                    "cols" in uploadPreview.dicom && (
+                      <div className="preview-meta">
+                        Size: {uploadPreview.dicom.rows} x {uploadPreview.dicom.cols}
+                      </div>
+                    )}
+                  {uploadPreview.dicom.pixel_spacing && (
+                    <div className="preview-meta">
+                      Spacing: {uploadPreview.dicom.pixel_spacing.join(", ")}
+                    </div>
+                  )}
+                  {uploadPreview.dicom.slice_thickness && (
+                    <div className="preview-meta">
+                      Slice thickness: {uploadPreview.dicom.slice_thickness}
+                    </div>
+                  )}
+                  {uploadPreview.dicom.modality && (
+                    <div className="preview-meta">
+                      Modality: {uploadPreview.dicom.modality}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {uploadPreview.warnings && uploadPreview.warnings.length > 0 && (
+              <div className="preview-warnings">
+                {uploadPreview.warnings.map((warning) => (
+                  <span key={warning}>{warning}</span>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {uploadResult && (
+          <div className="viewer-card">
+            <div className="viewer-head">
+              <div>
+                <div className="viewer-title">Imaging viewer</div>
+                <div className="viewer-subtitle">
+                  Explore the scan in 2D or full 3D volume.
+                </div>
+              </div>
+              <div className="viewer-actions">
+                {enable3DViewer && (
+                  <div className="viewer-tabs">
+                    <button
+                      type="button"
+                      className={`viewer-tab ${
+                        viewerMode === "3d" ? "active" : ""
+                      }`}
+                      onClick={() => setViewerMode("3d")}
+                    >
+                      3D volume
+                    </button>
+                    <button
+                      type="button"
+                      className={`viewer-tab ${
+                        viewerMode === "2d" ? "active" : ""
+                      }`}
+                      onClick={() => setViewerMode("2d")}
+                    >
+                      2D slices
+                    </button>
+                  </div>
+                )}
+                {volumeInfo && (
+                  <div className="viewer-meta">
+                    <span className="meta-chip">
+                      Shape: {volumeInfo.shape.join(" x ")}
+                    </span>
+                    <span className="meta-chip">
+                      Channels: {volumeInfo.channels}
+                    </span>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {viewerError && (
+              <div className="banner banner-error" role="alert">
+                {viewerError}
+              </div>
+            )}
+
+            {viewerMode === "2d" && viewerLoading && (
+              <div className="viewer-loading skeleton">
+                <div className="skeleton-line wide" />
+                <div className="skeleton-line" />
+                <div className="skeleton-line short" />
+              </div>
+            )}
+
+            {viewerMode === "2d" && !viewerLoading && volumeInfo && axisSizes && (
+              <>
+                <div className="viewer-controls">
+                  <label className="viewer-control">
+                    <span>Color map</span>
+                    <select
+                      value={sliceColormap}
+                      onChange={(event) =>
+                        setSliceColormap(event.target.value as SliceColorMap)
+                      }
+                    >
+                      {SLICE_COLORMAPS.map((map) => (
+                        <option key={map.id} value={map.id}>
+                          {map.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+                <div className="viewer-grid">
+                  {(["sagittal", "coronal", "axial"] as AxisKey[]).map((axis) => (
+                    <div className="viewer-panel" key={axis}>
+                      <div className="viewer-panel-head">
+                        <span className="viewer-label">{axis}</span>
+                        <span className="viewer-index">
+                          {sliceIndex[axis]} / {axisSizes[axis] - 1}
+                        </span>
+                      </div>
+                      <div className="viewer-image">
+                        <img
+                          src={buildSliceUrl(axis, sliceIndex[axis])}
+                          alt={`${axis} slice`}
+                          loading="lazy"
+                        />
+                      </div>
+                      <input
+                        className="viewer-slider"
+                        type="range"
+                        min={0}
+                        max={Math.max(axisSizes[axis] - 1, 0)}
+                        value={sliceIndex[axis]}
+                        onChange={(event) => {
+                          const value = Number(event.target.value);
+                          setSliceIndex((prev) => ({
+                            ...prev,
+                            [axis]: value,
+                          }));
+                        }}
+                        disabled={axisSizes[axis] <= 1}
+                      />
+                    </div>
+                  ))}
+                </div>
+
+                {volumeInfo.channels > 1 && (
+                  <div className="viewer-channel">
+                    <div className="viewer-channel-head">
+                      <span>Channel</span>
+                      <strong>
+                        {viewerChannel + 1} / {volumeInfo.channels}
+                      </strong>
+                    </div>
+                    <input
+                      className="viewer-slider"
+                      type="range"
+                      min={0}
+                      max={volumeInfo.channels - 1}
+                      value={viewerChannel}
+                      onChange={(event) =>
+                        setViewerChannel(Number(event.target.value))
+                      }
+                    />
+                    {channelLabels.length === volumeInfo.channels && (
+                      <div className="viewer-channel-tags">
+                        {channelLabels.map((label, index) => (
+                          <button
+                            key={label}
+                            type="button"
+                            className={`viewer-tag ${
+                              viewerChannel === index ? "active" : ""
+                            }`}
+                            onClick={() => setViewerChannel(index)}
+                          >
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </>
+            )}
+
+            {viewerMode === "3d" && (
+              <div className="viewer-3d">
+                <div className="viewer-3d-frame">
+                  <div className="viewer-3d-canvas" ref={viewerRef} />
+                  {viewer3dLoading && (
+                    <div className="viewer-3d-loading">
+                      Loading volume...
+                    </div>
+                  )}
+                </div>
+                {viewer3dError && (
+                  <div className="banner banner-error" role="alert">
+                    {viewer3dError}
+                  </div>
+                )}
+                <div className="viewer-3d-hint">
+                  Drag to rotate, scroll to zoom, right-click to pan.
+                </div>
+                <div className="viewer-controls">
+                  <label className="viewer-control">
+                    <span>Color map</span>
+                    <select
+                      value={volumeColormap}
+                      onChange={(event) =>
+                        setVolumeColormap(
+                          event.target.value as VolumeColorMap
+                        )
+                      }
+                    >
+                      {VOLUME_COLORMAPS.map((map) => (
+                        <option key={map.id} value={map.id}>
+                          {map.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+                {volumeInfo && volumeInfo.channels > 1 && (
+                  <div className="viewer-channel">
+                    <div className="viewer-channel-head">
+                      <span>Channel</span>
+                      <strong>
+                        {viewerChannel + 1} / {volumeInfo.channels}
+                      </strong>
+                    </div>
+                    <input
+                      className="viewer-slider"
+                      type="range"
+                      min={0}
+                      max={volumeInfo.channels - 1}
+                      value={viewerChannel}
+                      onChange={(event) =>
+                        setViewerChannel(Number(event.target.value))
+                      }
+                    />
+                    {channelLabels.length === volumeInfo.channels && (
+                      <div className="viewer-channel-tags">
+                        {channelLabels.map((label, index) => (
+                          <button
+                            key={label}
+                            type="button"
+                            className={`viewer-tag ${
+                              viewerChannel === index ? "active" : ""
+                            }`}
+                            onClick={() => setViewerChannel(index)}
+                          >
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {viewerMode === "2d" && !viewerLoading && !volumeInfo && !viewerError && (
+              <p className="muted">Viewer not available for this upload.</p>
+            )}
+          </div>
+        )}
       </section>
 
       <section className="panel">
