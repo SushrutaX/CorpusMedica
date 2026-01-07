@@ -12,3 +12,4 @@ dicom2nifti==2.4.10
 numpy==1.26.4
 requests==2.32.3
 pytorch-ignite==0.4.11
+einops==0.7.0
