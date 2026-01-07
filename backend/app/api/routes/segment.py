@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import torch
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from config import settings
 from app.services.inference import (
@@ -22,25 +22,29 @@ router = APIRouter()
 JobStatus = Literal["queued", "running", "done", "error"]
 
 
-class SegmentRequest(BaseModel):
+class ApiModel(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
+
+class SegmentRequest(ApiModel):
     saved_path: str
     model_id: str
 
 
-class SegmentResponse(BaseModel):
+class SegmentResponse(ApiModel):
     job_id: str
 
 
-class Metrics(BaseModel):
+class Metrics(ApiModel):
     tumor_volume_cm3: float
 
 
-class Outputs(BaseModel):
+class Outputs(ApiModel):
     mask_path: str
     report_path: str
 
 
-class ResultsResponse(BaseModel):
+class ResultsResponse(ApiModel):
     job_id: str
     status: JobStatus
     model_id: str
@@ -54,7 +58,7 @@ _jobs: Dict[str, ResultsResponse] = {}
 _jobs_lock = threading.Lock()
 
 
-class JobHistoryItem(BaseModel):
+class JobHistoryItem(ApiModel):
     job_id: str
     status: JobStatus
     model_id: str
