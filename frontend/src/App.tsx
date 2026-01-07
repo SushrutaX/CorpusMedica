@@ -43,6 +43,21 @@ type ResultsResponse = {
   error_message?: string | null;
 };
 
+type JobHistoryItem = {
+  job_id: string;
+  status: JobStatus;
+  model_id: string;
+  input_path: string;
+  metrics: {
+    tumor_volume_cm3: number;
+  };
+  outputs: {
+    mask_path: string;
+    report_path: string;
+  };
+  error_message?: string | null;
+};
+
 type Notice = {
   id: string;
   type: "success" | "error" | "info";
@@ -68,6 +83,9 @@ export default function App() {
   const [jobStatus, setJobStatus] = useState<JobStatus | null>(null);
   const [jobResult, setJobResult] = useState<ResultsResponse | null>(null);
   const [error, setError] = useState<string>("");
+  const [jobHistory, setJobHistory] = useState<JobHistoryItem[]>([]);
+  const [historyLoading, setHistoryLoading] = useState<boolean>(false);
+  const [historyError, setHistoryError] = useState<string>("");
   const [notices, setNotices] = useState<Notice[]>([]);
 
   const selectedModel = useMemo(
@@ -78,6 +96,7 @@ export default function App() {
     () => models.filter((model) => model.available),
     [models]
   );
+  const recentJobs = useMemo(() => jobHistory.slice(0, 6), [jobHistory]);
 
   const pushNotice = useCallback(
     (type: Notice["type"], title: string, message: string) => {
@@ -119,6 +138,33 @@ export default function App() {
       active = false;
     };
   }, [pushNotice]);
+
+  const loadHistory = useCallback(async () => {
+    try {
+      setHistoryError("");
+      setHistoryLoading(true);
+      const res = await fetch(`${API_BASE}/api/jobs`);
+      if (!res.ok) throw new Error(`Jobs API failed (${res.status})`);
+      const data = (await res.json()) as JobHistoryItem[];
+      setJobHistory(Array.isArray(data) ? data : []);
+    } catch (e: unknown) {
+      const message =
+        e instanceof Error ? e.message : "Failed to load job history";
+      setHistoryError(message);
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadHistory();
+  }, [loadHistory]);
+
+  useEffect(() => {
+    if (jobStatus === "done") {
+      loadHistory();
+    }
+  }, [jobStatus, loadHistory]);
 
   useEffect(() => {
     if (!jobId) return undefined;
@@ -177,6 +223,9 @@ export default function App() {
     uploadResult && selectedModelId && selectedModel?.available
   );
   const isRunning = jobStatus === "queued" || jobStatus === "running";
+  const hasOutputs =
+    Boolean(jobResult?.outputs?.mask_path) &&
+    Boolean(jobResult?.outputs?.report_path);
   const progress =
     jobStatus === "queued"
       ? 25
@@ -310,7 +359,9 @@ export default function App() {
       <header className="hero">
         <div className="hero-copy">
           <span className="pill">Open source - modular - model agnostic</span>
-          <h1>MedAI Platform</h1>
+          <h1 className="hero-title">
+            MedAI <span>Platform</span>
+          </h1>
           <p className="lead">
             Upload a medical scan, select a segmentation model, and track results
             in real time.
@@ -472,7 +523,11 @@ export default function App() {
             <h2>3. Run segmentation</h2>
             <p>Submit the job and monitor progress.</p>
           </div>
-          <span className={`status-badge ${jobStatus ? `status-${jobStatus}` : ""}`}>
+          <span
+            className={`status-badge ${
+              jobStatus ? `status-${jobStatus}` : ""
+            } ${isRunning ? "status-pulse" : ""}`}
+          >
             {statusLabel}
           </span>
         </div>
@@ -522,7 +577,11 @@ export default function App() {
                   : "Run segmentation to receive a job id."}
               </div>
             </div>
-            <span className={`status-badge ${jobStatus ? `status-${jobStatus}` : ""}`}>
+            <span
+              className={`status-badge ${
+                jobStatus ? `status-${jobStatus}` : ""
+              } ${isRunning ? "status-pulse" : ""}`}
+            >
               {statusLabel}
             </span>
           </div>
@@ -573,36 +632,40 @@ export default function App() {
           <div className="result-card">
             <h3>Outputs</h3>
             {jobStatus === "done" && jobResult ? (
-              <div className="output-list">
-                <div className="output-item">
-                  <div>
-                    <span className="output-label">Segmentation mask</span>
-                    <span className="mono">{jobResult.outputs.mask_path}</span>
+              hasOutputs ? (
+                <div className="output-list">
+                  <div className="output-item">
+                    <div>
+                      <span className="output-label">Segmentation mask</span>
+                      <span className="mono">{jobResult.outputs.mask_path}</span>
+                    </div>
+                    <a
+                      className="btn btn-ghost btn-small"
+                      href={buildDownloadUrl(jobResult.outputs.mask_path)}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Download
+                    </a>
                   </div>
-                  <a
-                    className="btn btn-ghost btn-small"
-                    href={buildDownloadUrl(jobResult.outputs.mask_path)}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    Download
-                  </a>
-                </div>
-                <div className="output-item">
-                  <div>
-                    <span className="output-label">Report</span>
-                    <span className="mono">{jobResult.outputs.report_path}</span>
+                  <div className="output-item">
+                    <div>
+                      <span className="output-label">Report</span>
+                      <span className="mono">{jobResult.outputs.report_path}</span>
+                    </div>
+                    <a
+                      className="btn btn-ghost btn-small"
+                      href={buildDownloadUrl(jobResult.outputs.report_path)}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Download
+                    </a>
                   </div>
-                  <a
-                    className="btn btn-ghost btn-small"
-                    href={buildDownloadUrl(jobResult.outputs.report_path)}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    Download
-                  </a>
                 </div>
-              </div>
+              ) : (
+                <p className="muted">Outputs not available for this job.</p>
+              )
             ) : (
               <div className="skeleton-block">
                 <div className="skeleton-line wide" />
@@ -613,10 +676,114 @@ export default function App() {
           </div>
         </div>
 
-        {jobStatus === "error" && (
+      {jobStatus === "error" && (
           <div className="banner banner-error" role="alert">
             {jobResult?.error_message ||
               "Segmentation failed. Please retry the run."}
+          </div>
+        )}
+      </section>
+
+      <section className="panel history-panel">
+        <div className="panel-head">
+          <div>
+            <h2>5. Recent jobs</h2>
+            <p>Completed runs stored in this workspace.</p>
+          </div>
+          <button
+            type="button"
+            className="btn btn-ghost btn-small"
+            onClick={loadHistory}
+            disabled={historyLoading}
+          >
+            {historyLoading ? "Refreshing..." : "Refresh"}
+          </button>
+        </div>
+
+        {historyError && (
+          <div className="banner banner-error" role="alert">
+            {historyError}
+          </div>
+        )}
+
+        {historyLoading && (
+          <div className="history-grid">
+            {SKELETONS.map((index) => (
+              <div className="history-card skeleton" key={`history-${index}`}>
+                <div className="skeleton-line wide" />
+                <div className="skeleton-line" />
+                <div className="skeleton-line short" />
+              </div>
+            ))}
+          </div>
+        )}
+
+        {!historyLoading && recentJobs.length === 0 && (
+          <div className="empty-state">No completed jobs yet.</div>
+        )}
+
+        {!historyLoading && recentJobs.length > 0 && (
+          <div className="history-grid">
+            {recentJobs.map((item) => {
+              const itemHasOutputs =
+                Boolean(item.outputs?.mask_path) &&
+                Boolean(item.outputs?.report_path);
+              const volume =
+                item.metrics.tumor_volume_cm3 > 0
+                  ? `${item.metrics.tumor_volume_cm3.toFixed(1)} cm3`
+                  : "n/a";
+              return (
+                <div className="history-card" key={item.job_id}>
+                  <div className="history-head">
+                    <div>
+                      <div className="history-title">
+                        Job {item.job_id.slice(0, 8)}
+                      </div>
+                      <div className="history-subtitle">
+                        Model: {item.model_id || "unknown"}
+                      </div>
+                    </div>
+                    <span className={`status-badge status-${item.status}`}>
+                      {item.status}
+                    </span>
+                  </div>
+                  <div className="history-meta">
+                    <span className="history-label">Input</span>
+                    <span className="mono history-input">
+                      {item.input_path || "n/a"}
+                    </span>
+                  </div>
+                  <div className="history-metric">
+                    <span>Tumor volume</span>
+                    <strong>{volume}</strong>
+                  </div>
+                  <div className="history-actions">
+                    {itemHasOutputs ? (
+                      <>
+                        <a
+                          className="btn btn-ghost btn-small"
+                          href={buildDownloadUrl(item.outputs.mask_path)}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          Mask
+                        </a>
+                        <a
+                          className="btn btn-ghost btn-small"
+                          href={buildDownloadUrl(item.outputs.report_path)}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          Report
+                        </a>
+                      </>
+                    ) : (
+                      <span className="muted">Outputs pending</span>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         )}
       </section>
