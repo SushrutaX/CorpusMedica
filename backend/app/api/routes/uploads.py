@@ -1,8 +1,11 @@
+import hashlib
 import io
 import shutil
 import tempfile
+import time
 import zipfile
 from pathlib import Path
+from threading import Lock
 from typing import Dict, List, Optional, Tuple
 from uuid import uuid4
 
@@ -19,6 +22,126 @@ from config import settings
 from app.services.storage import save_upload, save_uploads_batch
 
 router = APIRouter()
+
+_CACHE_TTL_SECONDS = 20 * 60
+_CACHE_MAX_ENTRIES = 8
+_ZIP_CACHE: Dict[str, Tuple[Path, float]] = {}
+_DICOM_CACHE: Dict[str, Tuple[Path, float]] = {}
+_NIFTI_CACHE: Dict[str, Tuple[Path, float]] = {}
+_CACHE_LOCK = Lock()
+
+
+def _cache_key_for_path(path: Path) -> str:
+    stat = path.stat()
+    seed = f"{path.resolve()}::{stat.st_size}::{stat.st_mtime_ns}"
+    return hashlib.sha1(seed.encode("utf-8")).hexdigest()
+
+
+def _cache_dir(prefix: str, key: str) -> Path:
+    return Path(settings.temp_dir) / f"{prefix}_{key[:12]}"
+
+
+def _prune_cache(cache: Dict[str, Tuple[Path, float]]) -> None:
+    now = time.time()
+    expired = [
+        (key, entry)
+        for key, entry in cache.items()
+        if now - entry[1] > _CACHE_TTL_SECONDS or not entry[0].exists()
+    ]
+    for key, (path, _ts) in expired:
+        cache.pop(key, None)
+        shutil.rmtree(path, ignore_errors=True)
+
+    if len(cache) <= _CACHE_MAX_ENTRIES:
+        return
+    oldest = sorted(cache.items(), key=lambda item: item[1][1])[: -_CACHE_MAX_ENTRIES]
+    for key, (path, _ts) in oldest:
+        cache.pop(key, None)
+        shutil.rmtree(path, ignore_errors=True)
+
+
+def _ensure_zip_extracted(path: Path) -> Path:
+    cache_key = _cache_key_for_path(path)
+    with _CACHE_LOCK:
+        _prune_cache(_ZIP_CACHE)
+        entry = _ZIP_CACHE.get(cache_key)
+        if entry and entry[0].exists():
+            _ZIP_CACHE[cache_key] = (entry[0], time.time())
+            temp_dir = entry[0]
+        else:
+            temp_dir = _cache_dir("zip_cache", cache_key)
+            _ZIP_CACHE[cache_key] = (temp_dir, time.time())
+
+    sentinel = temp_dir / ".complete"
+    if sentinel.exists():
+        return temp_dir
+
+    shutil.rmtree(temp_dir, ignore_errors=True)
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        with zipfile.ZipFile(path, "r") as archive:
+            archive.extractall(temp_dir)
+    except (zipfile.BadZipFile, EOFError) as exc:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        raise ValueError("Zip file is corrupted or incomplete.") from exc
+
+    sentinel.touch()
+    return temp_dir
+
+
+def _ensure_dicom_converted(dicom_root: Path) -> Path:
+    cache_key = _cache_key_for_path(dicom_root)
+    with _CACHE_LOCK:
+        _prune_cache(_DICOM_CACHE)
+        entry = _DICOM_CACHE.get(cache_key)
+        if entry and entry[0].exists():
+            _DICOM_CACHE[cache_key] = (entry[0], time.time())
+            temp_dir = entry[0]
+        else:
+            temp_dir = _cache_dir("dicom_cache", cache_key)
+            _DICOM_CACHE[cache_key] = (temp_dir, time.time())
+
+    sentinel = temp_dir / ".complete"
+    if sentinel.exists():
+        return _find_largest_nifti(temp_dir)
+
+    shutil.rmtree(temp_dir, ignore_errors=True)
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    nifti_path = _convert_dicom_to_nifti(dicom_root, temp_dir / "nifti")
+    sentinel.touch()
+    return nifti_path
+
+
+def _ensure_uncompressed_nifti(path: Path) -> Path:
+    if not path.name.lower().endswith(".nii.gz"):
+        return path
+    cache_key = _cache_key_for_path(path)
+    with _CACHE_LOCK:
+        _prune_cache(_NIFTI_CACHE)
+        entry = _NIFTI_CACHE.get(cache_key)
+        if entry and entry[0].exists():
+            _NIFTI_CACHE[cache_key] = (entry[0], time.time())
+            cached = entry[0]
+        else:
+            cached = _cache_dir("nifti_cache", cache_key)
+            _NIFTI_CACHE[cache_key] = (cached, time.time())
+
+    out_path = cached / "volume.nii"
+    sentinel = cached / ".complete"
+    if sentinel.exists() and out_path.exists():
+        return out_path
+
+    shutil.rmtree(cached, ignore_errors=True)
+    cached.mkdir(parents=True, exist_ok=True)
+    try:
+        image = nib.load(str(path))
+        nib.save(image, str(out_path))
+    except Exception as exc:
+        shutil.rmtree(cached, ignore_errors=True)
+        raise ValueError("Failed to prepare volume for fast slicing.") from exc
+
+    sentinel.touch()
+    return out_path
 
 
 def _is_nifti_name(name: str) -> bool:
@@ -142,29 +265,82 @@ def _load_volume_data(path: Path) -> Tuple[np.ndarray, List[float]]:
             return _stack_nifti_files(nifti_files)
 
         dicom_root = _find_dicom_root(path)
-        with tempfile.TemporaryDirectory(prefix="dicom_preview_") as temp_dir:
-            nifti_path = _convert_dicom_to_nifti(
-                dicom_root, Path(temp_dir) / "nifti"
-            )
-            return _load_single_nifti(nifti_path)
+        nifti_path = _ensure_dicom_converted(dicom_root)
+        return _load_single_nifti(nifti_path)
 
     if _is_zip_name(path.name):
-        with tempfile.TemporaryDirectory(prefix="zip_preview_") as temp_dir:
-            with zipfile.ZipFile(path, "r") as archive:
-                archive.extractall(temp_dir)
-            return _load_volume_data(Path(temp_dir))
+        extracted_dir = _ensure_zip_extracted(path)
+        return _load_volume_data(extracted_dir)
 
     if _is_nifti_name(path.name):
         return _load_single_nifti(path)
 
     if _is_dicom_file(path):
         dicom_root = _find_dicom_root(path.parent)
-        with tempfile.TemporaryDirectory(prefix="dicom_preview_") as temp_dir:
-            nifti_path = _convert_dicom_to_nifti(
-                dicom_root, Path(temp_dir) / "nifti"
-            )
-            return _load_single_nifti(nifti_path)
+        nifti_path = _ensure_dicom_converted(dicom_root)
+        return _load_single_nifti(nifti_path)
 
+    raise ValueError("Unsupported upload format for preview.")
+
+
+def _slice_from_nifti(
+    path: Path, axis_index: int, index: int, channel: int
+) -> np.ndarray:
+    target_path = _ensure_uncompressed_nifti(path)
+    image = nib.load(str(target_path))
+    shape = image.shape
+    if len(shape) < 3 or len(shape) > 4:
+        raise ValueError(f"Expected 3D or 4D NIfTI volume, got shape {shape}.")
+
+    data = image.dataobj
+    if len(shape) == 4:
+        if channel >= shape[3]:
+            raise ValueError("Channel index out of range.")
+        data = data[..., channel]
+
+    max_index = shape[axis_index] - 1
+    if index > max_index:
+        raise ValueError(f"Slice index out of range. Max index is {max_index}.")
+
+    if axis_index == 0:
+        return np.asarray(data[index, :, :])
+    if axis_index == 1:
+        return np.asarray(data[:, index, :])
+    return np.asarray(data[:, :, index])
+
+
+def _slice_from_directory(
+    path: Path, axis_index: int, index: int, channel: int
+) -> np.ndarray:
+    nifti_files = _find_nifti_files(path)
+    if nifti_files:
+        if len(nifti_files) > 1:
+            if channel >= len(nifti_files):
+                raise ValueError("Channel index out of range.")
+            selected = nifti_files[channel]
+        else:
+            selected = nifti_files[0]
+        return _slice_from_nifti(selected, axis_index, index, 0)
+
+    dicom_root = _find_dicom_root(path)
+    nifti_path = _ensure_dicom_converted(dicom_root)
+    return _slice_from_nifti(nifti_path, axis_index, index, 0)
+
+
+def _load_slice_data(
+    path: Path, axis_index: int, index: int, channel: int
+) -> np.ndarray:
+    if path.is_dir():
+        return _slice_from_directory(path, axis_index, index, channel)
+    if _is_zip_name(path.name):
+        extracted_dir = _ensure_zip_extracted(path)
+        return _slice_from_directory(extracted_dir, axis_index, index, channel)
+    if _is_nifti_name(path.name):
+        return _slice_from_nifti(path, axis_index, index, channel)
+    if _is_dicom_file(path):
+        dicom_root = _find_dicom_root(path.parent)
+        nifti_path = _ensure_dicom_converted(dicom_root)
+        return _slice_from_nifti(nifti_path, axis_index, index, 0)
     raise ValueError("Unsupported upload format for preview.")
 
 
@@ -478,6 +654,11 @@ def volume_file(
     resolved = _resolve_upload_path(path)
 
     if resolved.is_file() and _is_nifti_name(resolved.name):
+        if resolved.name.lower().endswith(".nii.gz"):
+            try:
+                resolved = _ensure_uncompressed_nifti(resolved)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
         image = nib.load(str(resolved))
         if len(image.shape) == 4 and image.shape[3] > 1:
             temp_dir = Path(settings.temp_dir) / f"viewer_{uuid4().hex}"
@@ -493,34 +674,28 @@ def volume_file(
             return FileResponse(str(nifti_files[index]), filename=nifti_files[index].name)
 
         dicom_root = _find_dicom_root(resolved)
-        temp_dir = Path(settings.temp_dir) / f"viewer_{uuid4().hex}"
-        nifti_path = _convert_dicom_to_nifti(dicom_root, temp_dir)
-        task = BackgroundTask(shutil.rmtree, temp_dir, True)
-        return FileResponse(str(nifti_path), filename=nifti_path.name, background=task)
+        nifti_path = _ensure_dicom_converted(dicom_root)
+        return FileResponse(str(nifti_path), filename=nifti_path.name)
 
     if _is_zip_name(resolved.name):
-        temp_dir = Path(settings.temp_dir) / f"viewer_{uuid4().hex}"
-        temp_dir.mkdir(parents=True, exist_ok=True)
-        with zipfile.ZipFile(resolved, "r") as archive:
-            archive.extractall(temp_dir)
+        try:
+            temp_dir = _ensure_zip_extracted(resolved)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
 
         nifti_files = _find_nifti_files(temp_dir)
         if nifti_files:
             index = _clamp_index(channel, len(nifti_files))
-            task = BackgroundTask(shutil.rmtree, temp_dir, True)
-            return FileResponse(str(nifti_files[index]), filename=nifti_files[index].name, background=task)
+            return FileResponse(str(nifti_files[index]), filename=nifti_files[index].name)
 
         dicom_root = _find_dicom_root(temp_dir)
-        nifti_path = _convert_dicom_to_nifti(dicom_root, temp_dir / "nifti")
-        task = BackgroundTask(shutil.rmtree, temp_dir, True)
-        return FileResponse(str(nifti_path), filename=nifti_path.name, background=task)
+        nifti_path = _ensure_dicom_converted(dicom_root)
+        return FileResponse(str(nifti_path), filename=nifti_path.name)
 
     if _is_dicom_file(resolved):
         dicom_root = _find_dicom_root(resolved.parent)
-        temp_dir = Path(settings.temp_dir) / f"viewer_{uuid4().hex}"
-        nifti_path = _convert_dicom_to_nifti(dicom_root, temp_dir)
-        task = BackgroundTask(shutil.rmtree, temp_dir, True)
-        return FileResponse(str(nifti_path), filename=nifti_path.name, background=task)
+        nifti_path = _ensure_dicom_converted(dicom_root)
+        return FileResponse(str(nifti_path), filename=nifti_path.name)
 
     raise HTTPException(status_code=400, detail="Unsupported upload format.")
 
@@ -535,36 +710,14 @@ def volume_slice(
 ):
     resolved = _resolve_upload_path(path)
     try:
-        volume, _zooms = _load_volume_data(resolved)
-    except (ValueError, FileNotFoundError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-
-    try:
         axis_index = _parse_axis(axis)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-    if volume.ndim == 4:
-        if channel >= volume.shape[3]:
-            raise HTTPException(status_code=400, detail="Channel index out of range.")
-        volume = volume[..., channel]
-
-    if volume.ndim != 3:
-        raise HTTPException(status_code=400, detail="Volume must be 3D for slicing.")
-
-    max_index = volume.shape[axis_index] - 1
-    if index > max_index:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Slice index out of range. Max index is {max_index}.",
-        )
-
-    if axis_index == 0:
-        slice_data = volume[index, :, :]
-    elif axis_index == 1:
-        slice_data = volume[:, index, :]
-    else:
-        slice_data = volume[:, :, index]
+    try:
+        slice_data = _load_slice_data(resolved, axis_index, index, channel)
+    except (ValueError, FileNotFoundError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
     normalized = _normalize_slice(slice_data)
     try:
@@ -573,4 +726,8 @@ def volume_slice(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     buffer = io.BytesIO()
     image.save(buffer, format="PNG")
-    return Response(content=buffer.getvalue(), media_type="image/png")
+    return Response(
+        content=buffer.getvalue(),
+        media_type="image/png",
+        headers={"Cache-Control": "private, max-age=120"},
+    )
