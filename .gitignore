@@ -23,3 +23,9 @@ Thumbs.db
 
 # Model weights
 models/
+
+# Model weights
+# models/
+!models/
+!models/bundles/**
+!models/registry.json
