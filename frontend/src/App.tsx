@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ChangeEvent } from "react";
+import type { ChangeEvent, PointerEvent as ReactPointerEvent } from "react";
 
 type Model = {
   id: string;
@@ -112,6 +112,70 @@ type VolumeColorMap =
   | "hot"
   | "cool"
   | "viridis";
+type WorkspaceTool = "brush" | "erase" | "rect" | "measure";
+type ClipAxis = "x" | "y" | "z";
+type PanelId = "left" | "right";
+type ResizeCorner = "nw" | "ne" | "sw" | "se";
+
+type PanelPosition = {
+  x: number;
+  y: number;
+};
+type PanelSize = {
+  width: number;
+  height: number;
+};
+
+type Label = {
+  id: string;
+  name: string;
+  color: string;
+};
+
+type NormPoint = {
+  x: number;
+  y: number;
+};
+
+type AnnotationItem = {
+  id: string;
+  kind: "stroke" | "rect" | "measure";
+  labelId: string;
+  createdAt: number;
+  points?: NormPoint[];
+  size?: number;
+  tool?: "brush" | "erase";
+  x?: number;
+  y?: number;
+  w?: number;
+  h?: number;
+  x2?: number;
+  y2?: number;
+  lengthMm?: number;
+};
+
+type AnnotationSet = {
+  items: AnnotationItem[];
+};
+
+type DrawingState = {
+  axis: AxisKey;
+  item: AnnotationItem;
+  start: NormPoint;
+};
+
+type Viewer3DState = {
+  renderWindow: any;
+  renderer: any;
+  volumeMapper: any;
+  volume: any;
+  ctfun: any;
+  ofun: any;
+  dataRange: [number, number];
+  dimensions: number[];
+  spacing: number[];
+  clipPlane: any | null;
+};
 
 const API_BASE: string =
   (import.meta.env.VITE_API_BASE_URL as string) || "http://localhost:8000";
@@ -121,6 +185,9 @@ const buildDownloadUrl = (path: string) =>
   `${API_BASE}/api/download?path=${encodeURIComponent(path)}`;
 const enable3DViewer =
   ((import.meta.env.VITE_ENABLE_3D_VIEWER as string) ?? "true") === "true";
+const enableViewerWorkspace =
+  ((import.meta.env.VITE_ENABLE_VIEWER_WORKSPACE as string) ?? "true") ===
+  "true";
 const SLICE_COLORMAPS: Array<{ id: SliceColorMap; label: string }> = [
   { id: "grayscale", label: "Grayscale" },
   { id: "bone", label: "Bone" },
@@ -135,6 +202,17 @@ const VOLUME_COLORMAPS: Array<{ id: VolumeColorMap; label: string }> = [
   { id: "hot", label: "Hot" },
   { id: "cool", label: "Cool" },
   { id: "viridis", label: "Viridis" },
+];
+const WORKSPACE_TOOLS: Array<{ id: WorkspaceTool; label: string }> = [
+  { id: "brush", label: "Brush" },
+  { id: "erase", label: "Erase" },
+  { id: "rect", label: "Rectangle ROI" },
+  { id: "measure", label: "Measure" },
+];
+const DEFAULT_LABELS: Label[] = [
+  { id: "label-1", name: "Tumor", color: "#ff5b6e" },
+  { id: "label-2", name: "Organ", color: "#3b82f6" },
+  { id: "label-3", name: "Vessel", color: "#22c55e" },
 ];
 const VOLUME_COLOR_STOPS: Record<
   VolumeColorMap,
@@ -183,6 +261,7 @@ export default function App() {
   const [uploadResult, setUploadResult] = useState<UploadResponse | null>(null);
   const [uploading, setUploading] = useState<boolean>(false);
   const [uploadPreview, setUploadPreview] = useState<UploadPreview | null>(null);
+  const [previewPath, setPreviewPath] = useState<string>("");
   const [volumeInfo, setVolumeInfo] = useState<VolumeInfo | null>(null);
   const [viewerLoading, setViewerLoading] = useState<boolean>(false);
   const [viewerError, setViewerError] = useState<string>("");
@@ -195,7 +274,16 @@ export default function App() {
     useState<SliceColorMap>("grayscale");
   const [volumeColormap, setVolumeColormap] =
     useState<VolumeColorMap>("radiance");
+  const [volumeOpacity, setVolumeOpacity] = useState<number>(0.9);
+  const [clipEnabled, setClipEnabled] = useState<boolean>(false);
+  const [clipAxis, setClipAxis] = useState<ClipAxis>("z");
+  const [clipValue, setClipValue] = useState<number>(0.55);
   const [sliceIndex, setSliceIndex] = useState<SliceIndex>({
+    sagittal: 0,
+    coronal: 0,
+    axial: 0,
+  });
+  const [sliceRequestIndex, setSliceRequestIndex] = useState<SliceIndex>({
     sagittal: 0,
     coronal: 0,
     axial: 0,
@@ -209,9 +297,128 @@ export default function App() {
   const [historyLoading, setHistoryLoading] = useState<boolean>(false);
   const [historyError, setHistoryError] = useState<string>("");
   const [notices, setNotices] = useState<Notice[]>([]);
+  const [workspacePath, setWorkspacePath] = useState<string>(() => {
+    const params = new URLSearchParams(window.location.search);
+    return params.get("path") ?? "";
+  });
+  const [workspaceTool, setWorkspaceTool] =
+    useState<WorkspaceTool>("brush");
+  const [labels, setLabels] = useState<Label[]>(DEFAULT_LABELS);
+  const [activeLabelId, setActiveLabelId] = useState<string>(
+    DEFAULT_LABELS[0]?.id ?? ""
+  );
+  const [brushSize, setBrushSize] = useState<number>(12);
+  const [overlayOpacity, setOverlayOpacity] = useState<number>(0.65);
+  const [annotationVersion, setAnnotationVersion] = useState<number>(0);
+  const [activeAxis, setActiveAxis] = useState<AxisKey>("axial");
+  const [panelPositions, setPanelPositions] = useState<{
+    left: PanelPosition;
+    right: PanelPosition;
+  }>({
+    left: { x: 16, y: 96 },
+    right: { x: 0, y: 96 },
+  });
+  const [panelSizes, setPanelSizes] = useState<{
+    left: PanelSize;
+    right: PanelSize;
+  }>({
+    left: { width: 260, height: 560 },
+    right: { width: 320, height: 640 },
+  });
+  const [showLeftShelf, setShowLeftShelf] = useState<boolean>(true);
+  const [showRightShelf, setShowRightShelf] = useState<boolean>(true);
+  const [draggingPanel, setDraggingPanel] = useState<PanelId | null>(null);
+  const [resizingPanel, setResizingPanel] = useState<PanelId | null>(null);
 
   const viewerRef = useRef<HTMLDivElement | null>(null);
   const viewerCleanupRef = useRef<(() => void) | null>(null);
+  const viewer3dStateRef = useRef<Viewer3DState | null>(null);
+  const vtkPlaneRef = useRef<any | null>(null);
+  const annotationsRef = useRef<Record<string, AnnotationSet>>({});
+  const drawingRef = useRef<DrawingState | null>(null);
+  const canvasRefs = useRef<Record<AxisKey, HTMLCanvasElement | null>>({
+    sagittal: null,
+    coronal: null,
+    axial: null,
+  });
+  const imageRefs = useRef<Record<AxisKey, HTMLImageElement | null>>({
+    sagittal: null,
+    coronal: null,
+    axial: null,
+  });
+  const leftPanelRef = useRef<HTMLDivElement | null>(null);
+  const rightPanelRef = useRef<HTMLDivElement | null>(null);
+  const slicePrefetchRef = useRef<SliceIndex | null>(null);
+  const dragStateRef = useRef<{
+    panel: PanelId;
+    offsetX: number;
+    offsetY: number;
+  } | null>(null);
+  const resizeStateRef = useRef<{
+    panel: PanelId;
+    startX: number;
+    startY: number;
+    startWidth: number;
+    startHeight: number;
+    startLeft: number;
+    startTop: number;
+    corner: ResizeCorner;
+  } | null>(null);
+
+  const isWorkspace = useMemo(() => {
+    const params = new URLSearchParams(window.location.search);
+    return enableViewerWorkspace && params.get("workspace") === "viewer";
+  }, []);
+
+  useEffect(() => {
+    if (!isWorkspace) return undefined;
+    const prevOverflow = document.body.style.overflow;
+    const prevHeight = document.body.style.height;
+    document.body.style.overflow = "hidden";
+    document.body.style.height = "100vh";
+    return () => {
+      document.body.style.overflow = prevOverflow;
+      document.body.style.height = prevHeight;
+    };
+  }, [isWorkspace]);
+
+  useEffect(() => {
+    if (!isWorkspace) return undefined;
+    const updatePositions = () => {
+      const rightWidth = panelSizes.right.width;
+      const maxX = Math.max(16, window.innerWidth - rightWidth - 16);
+      setPanelPositions((prev) => ({
+        left: prev.left,
+        right: {
+          x: prev.right.x === 0 ? maxX : Math.min(prev.right.x, maxX),
+          y: prev.right.y || 96,
+        },
+      }));
+    };
+    updatePositions();
+    window.addEventListener("resize", updatePositions);
+    return () => {
+      window.removeEventListener("resize", updatePositions);
+    };
+  }, [isWorkspace, panelSizes.right.width]);
+
+  useEffect(() => {
+    if (!isWorkspace) return;
+    const clamp = (pos: PanelPosition, size: PanelSize) => {
+      const minX = 8;
+      const minY = 56;
+      const maxX = Math.max(minX, window.innerWidth - size.width - 8);
+      const maxY = Math.max(minY, window.innerHeight - size.height - 8);
+      return {
+        x: Math.min(maxX, Math.max(minX, pos.x)),
+        y: Math.min(maxY, Math.max(minY, pos.y)),
+      };
+    };
+    setPanelPositions((prev) => ({
+      left: clamp(prev.left, panelSizes.left),
+      right: clamp(prev.right, panelSizes.right),
+    }));
+  }, [isWorkspace, panelSizes]);
 
   const selectedModel = useMemo(
     () => models.find((model) => model.id === selectedModelId) || null,
@@ -222,7 +429,7 @@ export default function App() {
     [models]
   );
   const recentJobs = useMemo(() => jobHistory.slice(0, 6), [jobHistory]);
-  const uploadPath = uploadResult?.saved_path ?? "";
+  const uploadPath = workspacePath || uploadResult?.saved_path || "";
 
   const pushNotice = useCallback(
     (type: Notice["type"], title: string, message: string) => {
@@ -322,14 +529,45 @@ export default function App() {
   }, [fetchVolumeInfo, uploadPath]);
 
   useEffect(() => {
+    if (!uploadPath) {
+      setPreviewPath("");
+      return;
+    }
+    if (previewPath === uploadPath) return;
+    const fetchPreview = async () => {
+      try {
+        const previewRes = await fetch(
+          `${API_BASE}/api/uploads/preview?path=${encodeURIComponent(uploadPath)}`
+        );
+        if (!previewRes.ok) return;
+        const preview = (await previewRes.json()) as UploadPreview;
+        setUploadPreview(preview);
+        setPreviewPath(uploadPath);
+      } catch {
+        // no-op
+      }
+    };
+    void fetchPreview();
+  }, [uploadPath, previewPath]);
+
+  useEffect(() => {
     if (!volumeInfo || volumeInfo.shape.length < 3) return;
-    setSliceIndex({
+    const midpoints = {
       sagittal: Math.floor(volumeInfo.shape[0] / 2),
       coronal: Math.floor(volumeInfo.shape[1] / 2),
       axial: Math.floor(volumeInfo.shape[2] / 2),
-    });
+    };
+    setSliceIndex(midpoints);
+    setSliceRequestIndex(midpoints);
     setViewerChannel(0);
   }, [volumeInfo]);
+
+  useEffect(() => {
+    const handle = window.setTimeout(() => {
+      setSliceRequestIndex(sliceIndex);
+    }, 90);
+    return () => window.clearTimeout(handle);
+  }, [sliceIndex]);
 
   const buildVolumeFileUrl = useCallback(() => {
     if (!uploadPath) return "";
@@ -369,59 +607,50 @@ export default function App() {
 
     const initViewer = async () => {
       try {
-        // @ts-expect-error vtk.js has no bundled types
         const vtkRenderWindowModule = await import(
           "vtk.js/Sources/Rendering/Core/RenderWindow"
         );
-        // @ts-expect-error vtk.js has no bundled types
         const vtkRendererModule = await import(
           "vtk.js/Sources/Rendering/Core/Renderer"
         );
-        // @ts-expect-error vtk.js has no bundled types
+        // @ts-expect-error vtk.js OpenGL bindings ship without types
         await import("vtk.js/Sources/Rendering/OpenGL/Renderer");
-        // @ts-expect-error vtk.js has no bundled types
+        // @ts-expect-error vtk.js OpenGL bindings ship without types
         await import("vtk.js/Sources/Rendering/OpenGL/Camera");
-        // @ts-expect-error vtk.js has no bundled types
         const vtkOpenGLRenderWindowModule = await import(
           "vtk.js/Sources/Rendering/OpenGL/RenderWindow"
         );
-        // @ts-expect-error vtk.js has no bundled types
+        // @ts-expect-error vtk.js OpenGL bindings ship without types
         await import("vtk.js/Sources/Rendering/OpenGL/Volume");
-        // @ts-expect-error vtk.js has no bundled types
+        // @ts-expect-error vtk.js OpenGL bindings ship without types
         await import("vtk.js/Sources/Rendering/OpenGL/VolumeMapper");
-        // @ts-expect-error vtk.js has no bundled types
         const vtkRenderWindowInteractorModule = await import(
           "vtk.js/Sources/Rendering/Core/RenderWindowInteractor"
         );
-        // @ts-expect-error vtk.js has no bundled types
         const vtkInteractorStyleTrackballCameraModule = await import(
           "vtk.js/Sources/Interaction/Style/InteractorStyleTrackballCamera"
         );
-        // @ts-expect-error vtk.js has no bundled types
         const vtkVolumeModule = await import(
           "vtk.js/Sources/Rendering/Core/Volume"
         );
-        // @ts-expect-error vtk.js has no bundled types
         const vtkVolumeMapperModule = await import(
           "vtk.js/Sources/Rendering/Core/VolumeMapper"
         );
-        // @ts-expect-error vtk.js has no bundled types
         const vtkColorTransferFunctionModule = await import(
           "vtk.js/Sources/Rendering/Core/ColorTransferFunction"
         );
-        // @ts-expect-error vtk.js has no bundled types
         const vtkPiecewiseFunctionModule = await import(
           "vtk.js/Sources/Common/DataModel/PiecewiseFunction"
         );
-        // @ts-expect-error vtk.js has no bundled types
         const vtkImageDataModule = await import(
           "vtk.js/Sources/Common/DataModel/ImageData"
         );
-        // @ts-expect-error vtk.js has no bundled types
         const vtkDataArrayModule = await import(
           "vtk.js/Sources/Common/Core/DataArray"
         );
-        // @ts-expect-error nifti-reader-js has no bundled types
+        const vtkPlaneModule = await import(
+          "vtk.js/Sources/Common/DataModel/Plane"
+        );
         const niftiModule = await import("nifti-reader-js");
 
         if (cancelled) return;
@@ -440,7 +669,10 @@ export default function App() {
         const vtkPiecewiseFunction = vtkPiecewiseFunctionModule.default;
         const vtkImageData = vtkImageDataModule.default;
         const vtkDataArray = vtkDataArrayModule.default;
+        const vtkPlane = vtkPlaneModule.default;
         const nifti = niftiModule;
+
+        vtkPlaneRef.current = vtkPlane;
 
         const renderWindow = vtkRenderWindow.newInstance();
         const renderer = vtkRenderer.newInstance();
@@ -465,9 +697,13 @@ export default function App() {
           throw new Error(`Volume download failed (${response.status})`);
         }
         const arrayBuffer = await response.arrayBuffer();
-        let buffer = arrayBuffer;
+        const toArrayBuffer = (data: ArrayBufferLike): ArrayBuffer => {
+          if (data instanceof ArrayBuffer) return data;
+          return new Uint8Array(data).slice().buffer;
+        };
+        let buffer: ArrayBuffer = arrayBuffer;
         if (nifti.isCompressed(buffer)) {
-          buffer = nifti.decompress(buffer);
+          buffer = toArrayBuffer(nifti.decompress(buffer) as ArrayBufferLike);
         }
         if (!nifti.isNIFTI(buffer)) {
           throw new Error("Unsupported volume file format.");
@@ -541,20 +777,20 @@ export default function App() {
         };
 
         const voxelData = toFloat32();
-        const dimensions = [
+        const dimensions: [number, number, number] = [
           Number(header.dims[1]),
           Number(header.dims[2]),
           Number(header.dims[3]),
         ];
-        const spacing = [
+        const spacing: [number, number, number] = [
           Number(header.pixDims[1] || 1),
           Number(header.pixDims[2] || 1),
           Number(header.pixDims[3] || 1),
         ];
 
         const imageData = vtkImageData.newInstance();
-        imageData.setDimensions(...dimensions);
-        imageData.setSpacing(...spacing);
+        imageData.setDimensions(dimensions);
+        imageData.setSpacing(spacing);
         const scalars = vtkDataArray.newInstance({
           name: "Scalars",
           numberOfComponents: 1,
@@ -576,6 +812,7 @@ export default function App() {
         const min = dataRange[0];
         const max = dataRange[1];
         const range = max - min || 1;
+        const opacityScale = Math.max(0, Math.min(volumeOpacity, 1));
         const mid = min + range * 0.5;
         const hi = min + range * 0.85;
 
@@ -587,9 +824,9 @@ export default function App() {
         });
 
         ofun.addPoint(min, 0.0);
-        ofun.addPoint(mid, 0.05);
-        ofun.addPoint(hi, 0.25);
-        ofun.addPoint(max, 0.9);
+        ofun.addPoint(mid, 0.05 * opacityScale);
+        ofun.addPoint(hi, 0.25 * opacityScale);
+        ofun.addPoint(max, 0.9 * opacityScale);
 
         const property = volume.getProperty();
         property.setRGBTransferFunction(0, ctfun);
@@ -603,6 +840,19 @@ export default function App() {
 
         renderer.addVolume(volume);
         renderer.resetCamera();
+
+        viewer3dStateRef.current = {
+          renderWindow,
+          renderer,
+          volumeMapper,
+          volume,
+          ctfun,
+          ofun,
+          dataRange: [min, max],
+          dimensions,
+          spacing,
+          clipPlane: null,
+        };
 
         const resize = () => {
           const bounds = container.getBoundingClientRect();
@@ -628,6 +878,7 @@ export default function App() {
         viewerCleanupRef.current = () => {
           resizeObserver?.disconnect();
           window.removeEventListener("resize", resize);
+          viewer3dStateRef.current = null;
           try {
             interactor.unbindEvents();
             interactor.delete();
@@ -660,7 +911,70 @@ export default function App() {
         viewerCleanupRef.current = null;
       }
     };
-  }, [viewerMode, uploadPath, viewerChannel, volumeColormap, buildVolumeFileUrl]);
+  }, [viewerMode, uploadPath, viewerChannel, buildVolumeFileUrl]);
+
+  useEffect(() => {
+    const state = viewer3dStateRef.current;
+    if (!state) return;
+    const [min, max] = state.dataRange;
+    const range = max - min || 1;
+    const stops =
+      VOLUME_COLOR_STOPS[volumeColormap] ?? VOLUME_COLOR_STOPS.radiance;
+    state.ctfun.removeAllPoints();
+    stops.forEach(([stop, color]) => {
+      const value = min + range * stop;
+      state.ctfun.addRGBPoint(value, color[0], color[1], color[2]);
+    });
+    state.renderWindow.render();
+  }, [volumeColormap]);
+
+  useEffect(() => {
+    const state = viewer3dStateRef.current;
+    if (!state) return;
+    const [min, max] = state.dataRange;
+    const range = max - min || 1;
+    const mid = min + range * 0.5;
+    const hi = min + range * 0.85;
+    const opacityScale = Math.max(0, Math.min(volumeOpacity, 1));
+    state.ofun.removeAllPoints();
+    state.ofun.addPoint(min, 0.0);
+    state.ofun.addPoint(mid, 0.05 * opacityScale);
+    state.ofun.addPoint(hi, 0.25 * opacityScale);
+    state.ofun.addPoint(max, 0.9 * opacityScale);
+    state.renderWindow.render();
+  }, [volumeOpacity]);
+
+  useEffect(() => {
+    const state = viewer3dStateRef.current;
+    if (!state) return;
+    state.volumeMapper.removeAllClippingPlanes();
+    if (clipEnabled) {
+      const vtkPlane = vtkPlaneRef.current;
+      if (!vtkPlane) return;
+      const plane = state.clipPlane ?? vtkPlane.newInstance();
+      const [dx, dy, dz] = state.dimensions;
+      const [sx, sy, sz] = state.spacing;
+      const maxX = dx * sx;
+      const maxY = dy * sy;
+      const maxZ = dz * sz;
+      const value = Math.max(0, Math.min(clipValue, 1));
+      if (clipAxis === "x") {
+        plane.setNormal(1, 0, 0);
+        plane.setOrigin(maxX * value, 0, 0);
+      } else if (clipAxis === "y") {
+        plane.setNormal(0, 1, 0);
+        plane.setOrigin(0, maxY * value, 0);
+      } else {
+        plane.setNormal(0, 0, 1);
+        plane.setOrigin(0, 0, maxZ * value);
+      }
+      state.volumeMapper.addClippingPlane(plane);
+      state.clipPlane = plane;
+    } else {
+      state.clipPlane = null;
+    }
+    state.renderWindow.render();
+  }, [clipEnabled, clipAxis, clipValue]);
 
   useEffect(() => {
     if (!jobId) return undefined;
@@ -799,6 +1113,36 @@ export default function App() {
     [uploadPath, viewerChannel, sliceColormap]
   );
 
+  useEffect(() => {
+    if (!uploadPath || !axisSizes) {
+      slicePrefetchRef.current = null;
+      return;
+    }
+    const previous = slicePrefetchRef.current;
+    slicePrefetchRef.current = sliceRequestIndex;
+    if (!previous) return;
+
+    (["sagittal", "coronal", "axial"] as AxisKey[]).forEach((axis) => {
+      if (sliceRequestIndex[axis] === previous[axis]) return;
+      const maxIndex = Math.max(0, axisSizes[axis] - 1);
+      if (maxIndex === 0) return;
+      const current = sliceRequestIndex[axis];
+      const candidates = [
+        Math.max(0, current - 1),
+        Math.min(maxIndex, current + 1),
+      ];
+      candidates.forEach((candidate) => {
+        if (candidate === current) return;
+        const url = buildSliceUrl(axis, candidate);
+        if (!url) return;
+        const img = new Image();
+        img.decoding = "async";
+        img.loading = "eager";
+        img.src = url;
+      });
+    });
+  }, [sliceRequestIndex, axisSizes, uploadPath, buildSliceUrl]);
+
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
     const selected = Array.from(event.target.files ?? []);
     setFiles(selected);
@@ -809,6 +1153,9 @@ export default function App() {
     setJobId("");
     setJobStatus(null);
     setJobResult(null);
+    if (workspacePath) {
+      setWorkspacePath("");
+    }
     if (selected.length > 0) {
       const name =
         selected.length === 1 ? selected[0].name : `${selected.length} files`;
@@ -876,6 +1223,7 @@ export default function App() {
         if (previewRes.ok) {
           const preview = (await previewRes.json()) as UploadPreview;
           setUploadPreview(preview);
+          setPreviewPath(savedPath);
         }
       }
     } catch (e: unknown) {
@@ -937,6 +1285,1266 @@ export default function App() {
       pushNotice("error", "Segmentation failed", message);
     }
   };
+
+  const labelMap = useMemo(() => {
+    const map = new Map<string, Label>();
+    labels.forEach((label) => {
+      map.set(label.id, label);
+    });
+    return map;
+  }, [labels]);
+
+  useEffect(() => {
+    if (!labels.length) return;
+    if (!labelMap.has(activeLabelId)) {
+      setActiveLabelId(labels[0].id);
+    }
+  }, [labels, labelMap, activeLabelId]);
+
+  const getAnnotationKey = useCallback(
+    (axis: AxisKey) => `${axis}-${sliceIndex[axis]}-${viewerChannel}`,
+    [sliceIndex, viewerChannel]
+  );
+
+  const getAnnotationSet = useCallback((key: string) => {
+    const existing = annotationsRef.current[key];
+    if (existing) return existing;
+    const created = { items: [] };
+    annotationsRef.current[key] = created;
+    return created;
+  }, []);
+
+  const clamp01 = (value: number) => Math.max(0, Math.min(value, 1));
+  const getImageFrame = (
+    canvas: HTMLCanvasElement,
+    image: HTMLImageElement
+  ) => {
+    const rect = canvas.getBoundingClientRect();
+    const width = rect.width;
+    const height = rect.height;
+    if (width <= 0 || height <= 0) {
+      return null;
+    }
+    const imageWidth = image.naturalWidth || width;
+    const imageHeight = image.naturalHeight || height;
+    const imageRatio = imageWidth / imageHeight;
+    const containerRatio = width / height;
+    let contentWidth = width;
+    let contentHeight = height;
+    let offsetX = 0;
+    let offsetY = 0;
+    if (imageRatio > containerRatio) {
+      contentWidth = width;
+      contentHeight = width / imageRatio;
+      offsetY = (height - contentHeight) / 2;
+    } else {
+      contentHeight = height;
+      contentWidth = height * imageRatio;
+      offsetX = (width - contentWidth) / 2;
+    }
+    return { width, height, contentWidth, contentHeight, offsetX, offsetY };
+  };
+
+  const getPlaneSpacing = useCallback(
+    (axis: AxisKey): [number, number] => {
+      const zooms = volumeInfo?.zooms ?? [1, 1, 1];
+      if (axis === "sagittal") return [zooms[1] ?? 1, zooms[2] ?? 1];
+      if (axis === "coronal") return [zooms[0] ?? 1, zooms[2] ?? 1];
+      return [zooms[0] ?? 1, zooms[1] ?? 1];
+    },
+    [volumeInfo]
+  );
+
+  const beginPanelDrag = useCallback(
+    (panel: PanelId) => (event: ReactPointerEvent<HTMLDivElement>) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const target =
+        panel === "left" ? leftPanelRef.current : rightPanelRef.current;
+      if (!target) return;
+      const rect = target.getBoundingClientRect();
+      dragStateRef.current = {
+        panel,
+        offsetX: event.clientX - rect.left,
+        offsetY: event.clientY - rect.top,
+      };
+      setDraggingPanel(panel);
+    },
+    []
+  );
+
+  const beginPanelResize = useCallback(
+    (panel: PanelId, corner: ResizeCorner) =>
+      (event: ReactPointerEvent<HTMLDivElement>) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const size = panelSizes[panel];
+      const pos = panelPositions[panel];
+      resizeStateRef.current = {
+        panel,
+        startX: event.clientX,
+        startY: event.clientY,
+        startWidth: size.width,
+        startHeight: size.height,
+        startLeft: pos.x,
+        startTop: pos.y,
+        corner,
+      };
+      setResizingPanel(panel);
+    },
+    [panelSizes, panelPositions]
+  );
+
+  useEffect(() => {
+    if (!draggingPanel) return undefined;
+    const onMove = (event: PointerEvent) => {
+      const state = dragStateRef.current;
+      if (!state) return;
+      const panelEl =
+        state.panel === "left" ? leftPanelRef.current : rightPanelRef.current;
+      const panelWidth = panelEl?.offsetWidth ?? panelSizes[state.panel].width;
+      const panelHeight =
+        panelEl?.offsetHeight ?? panelSizes[state.panel].height;
+      const minX = 8;
+      const minY = 56;
+      const maxX = Math.max(minX, window.innerWidth - panelWidth - 8);
+      const maxY = Math.max(minY, window.innerHeight - panelHeight - 8);
+      const nextX = Math.min(
+        maxX,
+        Math.max(minX, event.clientX - state.offsetX)
+      );
+      const nextY = Math.min(
+        maxY,
+        Math.max(minY, event.clientY - state.offsetY)
+      );
+      const snap = 18;
+      const snappedX =
+        nextX - minX < snap
+          ? minX
+          : maxX - nextX < snap
+          ? maxX
+          : nextX;
+      const snappedY =
+        nextY - minY < snap
+          ? minY
+          : maxY - nextY < snap
+          ? maxY
+          : nextY;
+      setPanelPositions((prev) => ({
+        ...prev,
+        [state.panel]: { x: snappedX, y: snappedY },
+      }));
+    };
+    const onUp = () => {
+      dragStateRef.current = null;
+      setDraggingPanel(null);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+  }, [draggingPanel, panelSizes]);
+
+  useEffect(() => {
+    if (!resizingPanel) return undefined;
+    const onMove = (event: PointerEvent) => {
+      const state = resizeStateRef.current;
+      if (!state) return;
+      const minWidth = 220;
+      const maxWidth = Math.min(520, window.innerWidth - 40);
+      const minHeight = 240;
+      const maxHeight = Math.min(760, window.innerHeight - 120);
+      const dx = event.clientX - state.startX;
+      const dy = event.clientY - state.startY;
+      let nextWidth = state.startWidth;
+      let nextHeight = state.startHeight;
+      let nextX = state.startLeft;
+      let nextY = state.startTop;
+
+      if (state.corner === "se") {
+        nextWidth = state.startWidth + dx;
+        nextHeight = state.startHeight + dy;
+      } else if (state.corner === "ne") {
+        nextWidth = state.startWidth + dx;
+        nextHeight = state.startHeight - dy;
+        nextY = state.startTop + dy;
+      } else if (state.corner === "sw") {
+        nextWidth = state.startWidth - dx;
+        nextHeight = state.startHeight + dy;
+        nextX = state.startLeft + dx;
+      } else {
+        nextWidth = state.startWidth - dx;
+        nextHeight = state.startHeight - dy;
+        nextX = state.startLeft + dx;
+        nextY = state.startTop + dy;
+      }
+
+      nextWidth = Math.min(
+        maxWidth,
+        Math.max(minWidth, nextWidth)
+      );
+      nextHeight = Math.min(
+        maxHeight,
+        Math.max(minHeight, nextHeight)
+      );
+
+      if (state.corner === "nw" || state.corner === "sw") {
+        nextX = state.startLeft + (state.startWidth - nextWidth);
+      }
+      if (state.corner === "nw" || state.corner === "ne") {
+        nextY = state.startTop + (state.startHeight - nextHeight);
+      }
+
+      const minX = 8;
+      const minY = 56;
+      const maxX = Math.max(minX, window.innerWidth - nextWidth - 8);
+      const maxY = Math.max(minY, window.innerHeight - nextHeight - 8);
+      nextX = Math.min(maxX, Math.max(minX, nextX));
+      nextY = Math.min(maxY, Math.max(minY, nextY));
+
+      setPanelSizes((prev) => ({
+        ...prev,
+        [state.panel]: { width: nextWidth, height: nextHeight },
+      }));
+      setPanelPositions((prev) => ({
+        ...prev,
+        [state.panel]: { x: nextX, y: nextY },
+      }));
+    };
+    const onUp = () => {
+      resizeStateRef.current = null;
+      setResizingPanel(null);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+  }, [resizingPanel]);
+
+  const renderOverlay = useCallback(
+    (axis: AxisKey) => {
+      const canvas = canvasRefs.current[axis];
+      const image = imageRefs.current[axis];
+      if (!canvas || !image) return;
+      const rect = image.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+      const width = Math.max(1, Math.floor(rect.width));
+      const height = Math.max(1, Math.floor(rect.height));
+      if (canvas.width !== width || canvas.height !== height) {
+        canvas.width = width;
+        canvas.height = height;
+      }
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+      ctx.clearRect(0, 0, width, height);
+      const frame = getImageFrame(canvas, image);
+      if (!frame) return;
+
+      const key = getAnnotationKey(axis);
+      const set = annotationsRef.current[key];
+      const items = set?.items ?? [];
+      const preview = drawingRef.current?.axis === axis ? drawingRef.current.item : null;
+      const allItems = preview ? [...items, preview] : items;
+      if (allItems.length === 0) return;
+
+      const toPx = (point: NormPoint) => ({
+        x: frame.offsetX + point.x * frame.contentWidth,
+        y: frame.offsetY + point.y * frame.contentHeight,
+      });
+
+      allItems.forEach((item) => {
+        const label = labelMap.get(item.labelId);
+        const color = label?.color ?? "#ffffff";
+        if (item.kind === "stroke" && item.points && item.points.length > 0) {
+          const lineWidth = Math.max(
+            1,
+            (item.size ?? 0.01) * frame.contentWidth
+          );
+          ctx.save();
+          ctx.lineCap = "round";
+          ctx.lineJoin = "round";
+          ctx.lineWidth = lineWidth;
+          if (item.tool === "erase") {
+            ctx.globalCompositeOperation = "destination-out";
+            ctx.strokeStyle = "rgba(0,0,0,1)";
+            ctx.globalAlpha = 1;
+          } else {
+            ctx.globalCompositeOperation = "source-over";
+            ctx.strokeStyle = color;
+            ctx.globalAlpha = overlayOpacity;
+          }
+          ctx.beginPath();
+          item.points.forEach((point, index) => {
+            const px = toPx(point);
+            if (index === 0) {
+              ctx.moveTo(px.x, px.y);
+            } else {
+              ctx.lineTo(px.x, px.y);
+            }
+          });
+          ctx.stroke();
+          ctx.restore();
+        }
+        if (item.kind === "rect" && typeof item.x === "number") {
+          const x = frame.offsetX + item.x * frame.contentWidth;
+          const y = frame.offsetY + (item.y ?? 0) * frame.contentHeight;
+          const w = (item.w ?? 0) * frame.contentWidth;
+          const h = (item.h ?? 0) * frame.contentHeight;
+          ctx.save();
+          ctx.globalAlpha = overlayOpacity;
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 2;
+          ctx.setLineDash([6, 4]);
+          ctx.strokeRect(x, y, w, h);
+          ctx.restore();
+        }
+        if (item.kind === "measure" && typeof item.x === "number") {
+          const x1 = frame.offsetX + item.x * frame.contentWidth;
+          const y1 = frame.offsetY + (item.y ?? 0) * frame.contentHeight;
+          const x2 = frame.offsetX + (item.x2 ?? 0) * frame.contentWidth;
+          const y2 = frame.offsetY + (item.y2 ?? 0) * frame.contentHeight;
+          ctx.save();
+          ctx.globalAlpha = overlayOpacity;
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(x1, y1);
+          ctx.lineTo(x2, y2);
+          ctx.stroke();
+          ctx.restore();
+          if (typeof item.lengthMm === "number") {
+            ctx.save();
+            ctx.font = "12px 'Space Grotesk', sans-serif";
+            ctx.fillStyle = color;
+            const midX = (x1 + x2) / 2;
+            const midY = (y1 + y2) / 2;
+            ctx.fillText(`${item.lengthMm.toFixed(1)} mm`, midX + 6, midY - 6);
+            ctx.restore();
+          }
+        }
+      });
+    },
+    [getAnnotationKey, labelMap, overlayOpacity]
+  );
+
+  useEffect(() => {
+    if (!isWorkspace || viewerMode !== "2d") return;
+    (["sagittal", "coronal", "axial"] as AxisKey[]).forEach((axis) => {
+      renderOverlay(axis);
+    });
+  }, [
+    annotationVersion,
+    isWorkspace,
+    renderOverlay,
+    sliceIndex,
+    viewerChannel,
+    viewerMode,
+  ]);
+
+  const handlePointerDown = (
+    event: ReactPointerEvent<HTMLCanvasElement>
+  ) => {
+    if (viewerMode !== "2d") return;
+    const canvas = event.currentTarget;
+    const axis = canvas.dataset.axis as AxisKey | undefined;
+    if (!axis || !labelMap.has(activeLabelId)) return;
+    const image = imageRefs.current[axis];
+    if (!image) return;
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+    const frame = getImageFrame(canvas, image);
+    if (!frame) return;
+    const point: NormPoint = {
+      x: clamp01((event.clientX - rect.left - frame.offsetX) / frame.contentWidth),
+      y: clamp01((event.clientY - rect.top - frame.offsetY) / frame.contentHeight),
+    };
+    setActiveAxis(axis);
+    const size = Math.max(2, brushSize) / frame.contentWidth;
+    const base: AnnotationItem = {
+      id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      labelId: activeLabelId,
+      createdAt: Date.now(),
+      kind: workspaceTool === "measure" ? "measure" : workspaceTool === "rect" ? "rect" : "stroke",
+    };
+
+    if (workspaceTool === "brush" || workspaceTool === "erase") {
+      drawingRef.current = {
+        axis,
+        start: point,
+        item: {
+          ...base,
+          kind: "stroke",
+          tool: workspaceTool,
+          points: [point],
+          size,
+        },
+      };
+    } else if (workspaceTool === "rect") {
+      drawingRef.current = {
+        axis,
+        start: point,
+        item: { ...base, kind: "rect", x: point.x, y: point.y, w: 0, h: 0 },
+      };
+    } else {
+      drawingRef.current = {
+        axis,
+        start: point,
+        item: {
+          ...base,
+          kind: "measure",
+          x: point.x,
+          y: point.y,
+          x2: point.x,
+          y2: point.y,
+          lengthMm: 0,
+        },
+      };
+    }
+    canvas.setPointerCapture(event.pointerId);
+    renderOverlay(axis);
+  };
+
+  const handlePointerMove = (
+    event: ReactPointerEvent<HTMLCanvasElement>
+  ) => {
+    const current = drawingRef.current;
+    if (!current) return;
+    const canvas = event.currentTarget;
+    const axis = canvas.dataset.axis as AxisKey | undefined;
+    if (!axis || axis !== current.axis) return;
+    const image = imageRefs.current[axis];
+    if (!image) return;
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+    const frame = getImageFrame(canvas, image);
+    if (!frame) return;
+    const point: NormPoint = {
+      x: clamp01((event.clientX - rect.left - frame.offsetX) / frame.contentWidth),
+      y: clamp01((event.clientY - rect.top - frame.offsetY) / frame.contentHeight),
+    };
+    if (current.item.kind === "stroke" && current.item.points) {
+      current.item.points.push(point);
+    } else if (current.item.kind === "rect") {
+      current.item.w = point.x - current.start.x;
+      current.item.h = point.y - current.start.y;
+      current.item.x = Math.min(current.start.x, point.x);
+      current.item.y = Math.min(current.start.y, point.y);
+      current.item.w = Math.abs(point.x - current.start.x);
+      current.item.h = Math.abs(point.y - current.start.y);
+    } else if (current.item.kind === "measure") {
+      current.item.x2 = point.x;
+      current.item.y2 = point.y;
+      const image = imageRefs.current[axis];
+      if (image) {
+        const [sx, sy] = getPlaneSpacing(axis);
+        const dx = (point.x - current.start.x) * image.naturalWidth * sx;
+        const dy = (point.y - current.start.y) * image.naturalHeight * sy;
+        current.item.lengthMm = Math.sqrt(dx * dx + dy * dy);
+      }
+    }
+    renderOverlay(axis);
+  };
+
+  const handlePointerUp = (event: ReactPointerEvent<HTMLCanvasElement>) => {
+    const current = drawingRef.current;
+    if (!current) return;
+    const canvas = event.currentTarget;
+    const axis = canvas.dataset.axis as AxisKey | undefined;
+    if (!axis || axis !== current.axis) return;
+    if (canvas.hasPointerCapture(event.pointerId)) {
+      canvas.releasePointerCapture(event.pointerId);
+    }
+    const key = getAnnotationKey(axis);
+    const set = getAnnotationSet(key);
+    if (current.item.kind === "stroke" && current.item.points?.length === 1) {
+      const point = current.item.points[0];
+      current.item.points = [point, point];
+    }
+    set.items.push(current.item);
+    drawingRef.current = null;
+    setAnnotationVersion((prev) => prev + 1);
+    renderOverlay(axis);
+  };
+
+  const handleUndo = () => {
+    const key = getAnnotationKey(activeAxis);
+    const set = annotationsRef.current[key];
+    if (!set || set.items.length === 0) return;
+    set.items.pop();
+    setAnnotationVersion((prev) => prev + 1);
+  };
+
+  const handleClearSlice = () => {
+    const key = getAnnotationKey(activeAxis);
+    if (annotationsRef.current[key]) {
+      annotationsRef.current[key].items = [];
+      setAnnotationVersion((prev) => prev + 1);
+    }
+  };
+
+  const handleClearAll = () => {
+    annotationsRef.current = {};
+    setAnnotationVersion((prev) => prev + 1);
+  };
+
+  const handleAddLabel = () => {
+    const nextId = `label-${Date.now()}`;
+    const nextLabel = {
+      id: nextId,
+      name: `Label ${labels.length + 1}`,
+      color: "#f59e0b",
+    };
+    setLabels((prev) => [...prev, nextLabel]);
+    setActiveLabelId(nextId);
+  };
+
+  const handleRemoveLabel = (labelId: string) => {
+    if (labels.length <= 1) return;
+    setLabels((prev) => prev.filter((label) => label.id !== labelId));
+  };
+
+  const handleLabelUpdate = (labelId: string, patch: Partial<Label>) => {
+    setLabels((prev) =>
+      prev.map((label) =>
+        label.id === labelId ? { ...label, ...patch } : label
+      )
+    );
+  };
+
+  const handleExportAnnotations = () => {
+    const payload = {
+      source_path: uploadPath || null,
+      labels,
+      annotations: annotationsRef.current,
+      created_at: new Date().toISOString(),
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `annotations-${Date.now()}.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const openWorkspace = () => {
+    if (!uploadPath || !enableViewerWorkspace) return;
+    const url = new URL(window.location.href);
+    url.searchParams.set("workspace", "viewer");
+    url.searchParams.set("path", uploadPath);
+    window.open(url.toString(), "_blank", "noopener");
+  };
+
+  const backToWorkflowUrl = useMemo(() => {
+    const url = new URL(window.location.href);
+    url.searchParams.delete("workspace");
+    url.searchParams.delete("path");
+    return url.toString();
+  }, []);
+
+  const annotationSummary = useMemo(() => {
+    const summary = { total: 0, strokes: 0, rects: 0, measures: 0 };
+    Object.values(annotationsRef.current).forEach((set) => {
+      set.items.forEach((item) => {
+        summary.total += 1;
+        if (item.kind === "stroke") summary.strokes += 1;
+        if (item.kind === "rect") summary.rects += 1;
+        if (item.kind === "measure") summary.measures += 1;
+      });
+    });
+    return summary;
+  }, [annotationVersion]);
+
+  const activeSliceCount = useMemo(() => {
+    const key = getAnnotationKey(activeAxis);
+    const set = annotationsRef.current[key];
+    return set?.items.length ?? 0;
+  }, [annotationVersion, activeAxis, getAnnotationKey]);
+
+  if (isWorkspace) {
+    return (
+      <div className="workspace workspace-blender">
+        <div className="ambient" aria-hidden="true" />
+        <div className="workspace-topbar">
+          <div className="workspace-brand">
+            <span>Corpus Medica</span>
+            <strong>Viewer Workspace</strong>
+          </div>
+          <div className="workspace-menu">
+            <button type="button">File</button>
+            <button type="button">Edit</button>
+            <button type="button">View</button>
+            <button type="button">Annotate</button>
+            <button type="button">Render</button>
+            <button type="button">Help</button>
+          </div>
+          <div className="workspace-top-actions">
+            <div className="workspace-status">
+              <span>{selectionLabel}</span>
+              {selectionWarning && (
+                <span className="warning">{selectionWarning}</span>
+              )}
+              {uploadPath && (
+                <span className="meta-chip">Path: {uploadPath}</span>
+              )}
+            </div>
+            {enable3DViewer && (
+              <div className="mode-toggle">
+                <button
+                  type="button"
+                  className={viewerMode === "2d" ? "active" : ""}
+                  onClick={() => setViewerMode("2d")}
+                >
+                  2D
+                </button>
+                <button
+                  type="button"
+                  className={viewerMode === "3d" ? "active" : ""}
+                  onClick={() => setViewerMode("3d")}
+                >
+                  3D
+                </button>
+              </div>
+            )}
+            <div className="workspace-shelf-toggle">
+              <button
+                type="button"
+                className={showLeftShelf ? "active" : ""}
+                onClick={() => setShowLeftShelf((prev) => !prev)}
+                aria-pressed={showLeftShelf}
+              >
+                {showLeftShelf ? "Hide left" : "Show left"}
+              </button>
+              <button
+                type="button"
+                className={showRightShelf ? "active" : ""}
+                onClick={() => setShowRightShelf((prev) => !prev)}
+                aria-pressed={showRightShelf}
+              >
+                {showRightShelf ? "Hide right" : "Show right"}
+              </button>
+            </div>
+            <div className="workspace-upload">
+              <label className="btn btn-secondary btn-small" htmlFor="workspace-upload">
+                Choose files
+              </label>
+              <input
+                id="workspace-upload"
+                type="file"
+                multiple
+                onChange={handleFileChange}
+              />
+              <button
+                type="button"
+                className="btn btn-accent btn-small"
+                onClick={handleUpload}
+                disabled={uploading || files.length === 0}
+              >
+                {uploading ? "Uploading..." : "Upload"}
+              </button>
+              <a className="btn btn-ghost btn-small" href={backToWorkflowUrl}>
+                Back
+              </a>
+            </div>
+          </div>
+        </div>
+
+        <div className="workspace-shell">
+          <main className="workspace-viewport">
+            <div className="viewport-header">
+              <div>
+                <div className="viewport-title">Scan workspace</div>
+                <div className="viewport-subtitle">
+                  Toggle between 2D annotation and 3D exploration.
+                </div>
+              </div>
+              {enable3DViewer && (
+                <div className="viewer-tabs">
+                  <button
+                    type="button"
+                    className={`viewer-tab ${viewerMode === "2d" ? "active" : ""}`}
+                    onClick={() => setViewerMode("2d")}
+                  >
+                    2D slices
+                  </button>
+                  <button
+                    type="button"
+                    className={`viewer-tab ${viewerMode === "3d" ? "active" : ""}`}
+                    onClick={() => setViewerMode("3d")}
+                  >
+                    3D volume
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {viewerError && (
+              <div className="banner banner-error" role="alert">
+                {viewerError}
+              </div>
+            )}
+
+            <div
+              className={`viewport-area ${
+                viewerMode === "2d" ? "viewport-2d" : "viewport-3d"
+              }`}
+            >
+              {!uploadPath && (
+                <div className="viewer-empty">
+                  Upload scans to start annotating.
+                </div>
+              )}
+
+              {uploadPath && viewerMode === "2d" && (
+                <>
+                  {viewerLoading && (
+                    <div className="viewer-loading skeleton">
+                      <div className="skeleton-line wide" />
+                      <div className="skeleton-line" />
+                      <div className="skeleton-line short" />
+                    </div>
+                  )}
+                  {!viewerLoading && volumeInfo && axisSizes && (
+                    <div className="viewer-grid">
+                      {(["sagittal", "coronal", "axial"] as AxisKey[]).map(
+                        (axis) => (
+                          <div className="viewer-panel" key={axis}>
+                            <div className="viewer-panel-head">
+                              <span className="viewer-label">{axis}</span>
+                              <span className="viewer-index">
+                                {sliceIndex[axis]} / {axisSizes[axis] - 1}
+                              </span>
+                            </div>
+                            <div className="viewer-image viewer-image-annotated">
+                              <img
+                                ref={(node) => {
+                                  imageRefs.current[axis] = node;
+                                }}
+                                src={buildSliceUrl(axis, sliceRequestIndex[axis])}
+                                alt={`${axis} slice`}
+                                loading="lazy"
+                                decoding="async"
+                                onLoad={() => renderOverlay(axis)}
+                              />
+                              <canvas
+                                ref={(node) => {
+                                  canvasRefs.current[axis] = node;
+                                }}
+                                data-axis={axis}
+                                onPointerDown={handlePointerDown}
+                                onPointerMove={handlePointerMove}
+                                onPointerUp={handlePointerUp}
+                                onPointerCancel={handlePointerUp}
+                                onPointerLeave={handlePointerUp}
+                              />
+                            </div>
+                            <input
+                              className="viewer-slider"
+                              type="range"
+                              min={0}
+                              max={Math.max(axisSizes[axis] - 1, 0)}
+                              value={sliceIndex[axis]}
+                              onChange={(event) => {
+                                const value = Number(event.target.value);
+                                setSliceIndex((prev) => ({
+                                  ...prev,
+                                  [axis]: value,
+                                }));
+                              }}
+                              disabled={axisSizes[axis] <= 1}
+                            />
+                          </div>
+                        )
+                      )}
+                    </div>
+                  )}
+                  {viewerMode === "2d" && !viewerLoading && !volumeInfo && (
+                    <p className="muted">Viewer not available for this upload.</p>
+                  )}
+                </>
+              )}
+
+              {uploadPath && viewerMode === "3d" && (
+                <div className="viewer-3d">
+                  <div className="viewer-3d-frame">
+                    <div className="viewer-3d-canvas" ref={viewerRef} />
+                    {viewer3dLoading && (
+                      <div className="viewer-3d-loading">Loading volume...</div>
+                    )}
+                  </div>
+                  {viewer3dError && (
+                    <div className="banner banner-error" role="alert">
+                      {viewer3dError}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </main>
+
+          {!showLeftShelf && (
+            <button
+              type="button"
+              className="workspace-dock workspace-dock-left"
+              onClick={() => setShowLeftShelf(true)}
+            >
+              Show left shelf
+            </button>
+          )}
+          {!showRightShelf && (
+            <button
+              type="button"
+              className="workspace-dock workspace-dock-right"
+              onClick={() => setShowRightShelf(true)}
+            >
+              Show right shelf
+            </button>
+          )}
+
+          {showLeftShelf && (
+            <div
+              className="workspace-float workspace-float-left"
+              ref={leftPanelRef}
+              style={{
+                transform: `translate3d(${panelPositions.left.x}px, ${panelPositions.left.y}px, 0)`,
+                width: panelSizes.left.width,
+                height: panelSizes.left.height,
+              }}
+            >
+              <div
+                className="workspace-float-handle"
+                onPointerDown={beginPanelDrag("left")}
+              >
+                Tool Shelf
+              </div>
+              <div className="workspace-float-content">
+                <div className="workspace-card">
+                  <h3>Tools</h3>
+                  <div className="tool-grid">
+                    {WORKSPACE_TOOLS.map((tool) => (
+                      <button
+                        key={tool.id}
+                        type="button"
+                        className={`tool-button ${
+                          workspaceTool === tool.id ? "active" : ""
+                        }`}
+                        onClick={() => setWorkspaceTool(tool.id)}
+                      >
+                        {tool.label}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="workspace-control">
+                    <label>
+                      Brush size
+                      <input
+                        type="range"
+                        min={4}
+                        max={40}
+                        value={brushSize}
+                        onChange={(event) =>
+                          setBrushSize(Number(event.target.value))
+                        }
+                      />
+                    </label>
+                    <strong>{brushSize}px</strong>
+                  </div>
+                  <div className="workspace-control">
+                    <label>
+                      Overlay opacity
+                      <input
+                        type="range"
+                        min={0.2}
+                        max={0.95}
+                        step={0.05}
+                        value={overlayOpacity}
+                        onChange={(event) =>
+                          setOverlayOpacity(Number(event.target.value))
+                        }
+                      />
+                    </label>
+                    <strong>{Math.round(overlayOpacity * 100)}%</strong>
+                  </div>
+                </div>
+
+                <div className="workspace-card">
+                  <h3>Actions</h3>
+                  <div className="action-grid">
+                    <button type="button" className="btn btn-secondary" onClick={handleUndo}>
+                      Undo
+                    </button>
+                    <button type="button" className="btn btn-secondary" onClick={handleClearSlice}>
+                      Clear slice
+                    </button>
+                    <button type="button" className="btn btn-secondary" onClick={handleClearAll}>
+                      Clear all
+                    </button>
+                    <button type="button" className="btn btn-accent" onClick={handleExportAnnotations}>
+                      Export JSON
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <div
+                className="panel-resizer panel-resizer-nw"
+                onPointerDown={beginPanelResize("left", "nw")}
+              />
+              <div
+                className="panel-resizer panel-resizer-ne"
+                onPointerDown={beginPanelResize("left", "ne")}
+              />
+              <div
+                className="panel-resizer panel-resizer-sw"
+                onPointerDown={beginPanelResize("left", "sw")}
+              />
+              <div
+                className="panel-resizer panel-resizer-se"
+                onPointerDown={beginPanelResize("left", "se")}
+              />
+            </div>
+          )}
+
+          {showRightShelf && (
+            <div
+              className="workspace-float workspace-float-right"
+              ref={rightPanelRef}
+              style={{
+                transform: `translate3d(${panelPositions.right.x}px, ${panelPositions.right.y}px, 0)`,
+                width: panelSizes.right.width,
+                height: panelSizes.right.height,
+              }}
+            >
+              <div
+                className="workspace-float-handle"
+                onPointerDown={beginPanelDrag("right")}
+              >
+                Properties
+              </div>
+              <div className="workspace-float-content">
+                {enable3DViewer && (
+                  <div className="workspace-card">
+                    <h3>View mode</h3>
+                    <div className="mode-toggle">
+                      <button
+                        type="button"
+                        className={viewerMode === "2d" ? "active" : ""}
+                        onClick={() => setViewerMode("2d")}
+                      >
+                        2D slices
+                      </button>
+                      <button
+                        type="button"
+                        className={viewerMode === "3d" ? "active" : ""}
+                        onClick={() => setViewerMode("3d")}
+                      >
+                        3D volume
+                      </button>
+                    </div>
+                  </div>
+                )}
+                <div className="workspace-card">
+                  <h3>Viewport settings</h3>
+                  {viewerMode === "2d" && (
+                    <>
+                      <div className="viewer-controls">
+                        <label className="viewer-control">
+                          <span>Color map</span>
+                          <select
+                            value={sliceColormap}
+                            onChange={(event) =>
+                              setSliceColormap(event.target.value as SliceColorMap)
+                            }
+                          >
+                            {SLICE_COLORMAPS.map((map) => (
+                              <option key={map.id} value={map.id}>
+                                {map.label}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      </div>
+                      {volumeInfo && volumeInfo.channels > 1 && (
+                        <div className="viewer-channel">
+                          <div className="viewer-channel-head">
+                            <span>Channel</span>
+                            <strong>
+                              {viewerChannel + 1} / {volumeInfo.channels}
+                            </strong>
+                          </div>
+                          <input
+                            className="viewer-slider"
+                            type="range"
+                            min={0}
+                            max={volumeInfo.channels - 1}
+                            value={viewerChannel}
+                            onChange={(event) =>
+                              setViewerChannel(Number(event.target.value))
+                            }
+                          />
+                          {channelLabels.length === volumeInfo.channels && (
+                            <div className="viewer-channel-tags">
+                              {channelLabels.map((label, index) => (
+                                <button
+                                  key={label}
+                                  type="button"
+                                  className={`viewer-tag ${
+                                    viewerChannel === index ? "active" : ""
+                                  }`}
+                                  onClick={() => setViewerChannel(index)}
+                                >
+                                  {label}
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </>
+                  )}
+
+                  {viewerMode === "3d" && (
+                    <>
+                      <div className="viewer-controls">
+                        <label className="viewer-control">
+                          <span>Color map</span>
+                          <select
+                            value={volumeColormap}
+                            onChange={(event) =>
+                              setVolumeColormap(
+                                event.target.value as VolumeColorMap
+                              )
+                            }
+                          >
+                            {VOLUME_COLORMAPS.map((map) => (
+                              <option key={map.id} value={map.id}>
+                                {map.label}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="viewer-control">
+                          <span>Opacity</span>
+                          <input
+                            type="range"
+                            min={0.2}
+                            max={1}
+                            step={0.05}
+                            value={volumeOpacity}
+                            onChange={(event) =>
+                              setVolumeOpacity(Number(event.target.value))
+                            }
+                          />
+                        </label>
+                        <label className="viewer-control">
+                          <span>Clipping</span>
+                          <div className="clip-toggle">
+                            <input
+                              type="checkbox"
+                              checked={clipEnabled}
+                              onChange={(event) =>
+                                setClipEnabled(event.target.checked)
+                              }
+                            />
+                            <select
+                              value={clipAxis}
+                              onChange={(event) =>
+                                setClipAxis(event.target.value as ClipAxis)
+                              }
+                              disabled={!clipEnabled}
+                            >
+                              <option value="x">X</option>
+                              <option value="y">Y</option>
+                              <option value="z">Z</option>
+                            </select>
+                          </div>
+                          <input
+                            type="range"
+                            min={0}
+                            max={1}
+                            step={0.01}
+                            value={clipValue}
+                            onChange={(event) =>
+                              setClipValue(Number(event.target.value))
+                            }
+                            disabled={!clipEnabled}
+                          />
+                        </label>
+                      </div>
+                      {volumeInfo && volumeInfo.channels > 1 && (
+                        <div className="viewer-channel">
+                          <div className="viewer-channel-head">
+                            <span>Channel</span>
+                            <strong>
+                              {viewerChannel + 1} / {volumeInfo.channels}
+                            </strong>
+                          </div>
+                          <input
+                            className="viewer-slider"
+                            type="range"
+                            min={0}
+                            max={volumeInfo.channels - 1}
+                            value={viewerChannel}
+                            onChange={(event) =>
+                              setViewerChannel(Number(event.target.value))
+                            }
+                          />
+                          {channelLabels.length === volumeInfo.channels && (
+                            <div className="viewer-channel-tags">
+                              {channelLabels.map((label, index) => (
+                                <button
+                                  key={label}
+                                  type="button"
+                                  className={`viewer-tag ${
+                                    viewerChannel === index ? "active" : ""
+                                  }`}
+                                  onClick={() => setViewerChannel(index)}
+                                >
+                                  {label}
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+
+                <div className="workspace-card">
+                  <div className="workspace-card-head">
+                    <h3>Labels</h3>
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-small"
+                      onClick={handleAddLabel}
+                    >
+                      Add
+                    </button>
+                  </div>
+                  <div className="label-list">
+                    {labels.map((label) => (
+                      <div
+                        key={label.id}
+                        className={`label-item ${
+                          activeLabelId === label.id ? "active" : ""
+                        }`}
+                      >
+                        <button
+                          type="button"
+                          className="label-select"
+                          onClick={() => setActiveLabelId(label.id)}
+                        >
+                          <span
+                            className="label-swatch"
+                            style={{ backgroundColor: label.color }}
+                          />
+                        </button>
+                        <input
+                          type="text"
+                          value={label.name}
+                          onChange={(event) =>
+                            handleLabelUpdate(label.id, { name: event.target.value })
+                          }
+                        />
+                        <input
+                          type="color"
+                          value={label.color}
+                          onChange={(event) =>
+                            handleLabelUpdate(label.id, { color: event.target.value })
+                          }
+                        />
+                        <button
+                          type="button"
+                          className="label-remove"
+                          onClick={() => handleRemoveLabel(label.id)}
+                          disabled={labels.length <= 1}
+                        >
+                          ?
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="workspace-card">
+                  <h3>Scan info</h3>
+                  {volumeInfo ? (
+                    <div className="meta-list">
+                      <div>Shape: {volumeInfo.shape.join(" x ")}</div>
+                      <div>Channels: {volumeInfo.channels}</div>
+                      {volumeInfo.zooms && (
+                        <div>Voxel size: {volumeInfo.zooms.join(" x ")}</div>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="muted">Upload a scan to see metadata.</p>
+                  )}
+                </div>
+
+                <div className="workspace-card">
+                  <h3>Annotation summary</h3>
+                  <div className="meta-list">
+                    <div>Active slice: {activeSliceCount}</div>
+                    <div>Total annotations: {annotationSummary.total}</div>
+                    <div>Brush strokes: {annotationSummary.strokes}</div>
+                    <div>Rectangles: {annotationSummary.rects}</div>
+                    <div>Measurements: {annotationSummary.measures}</div>
+                  </div>
+                </div>
+              </div>
+              <div
+                className="panel-resizer panel-resizer-nw"
+                onPointerDown={beginPanelResize("right", "nw")}
+              />
+              <div
+                className="panel-resizer panel-resizer-ne"
+                onPointerDown={beginPanelResize("right", "ne")}
+              />
+              <div
+                className="panel-resizer panel-resizer-sw"
+                onPointerDown={beginPanelResize("right", "sw")}
+              />
+              <div
+                className="panel-resizer panel-resizer-se"
+                onPointerDown={beginPanelResize("right", "se")}
+              />
+            </div>
+          )}
+        </div>
+
+        <div className="workspace-bottombar">
+          <span>
+            Tool: {workspaceTool} | Label: {labelMap.get(activeLabelId)?.name ?? "None"}
+          </span>
+          <span className="workspace-hint">
+            {viewerMode === "3d"
+              ? "Drag to rotate, scroll to zoom, right-click to pan."
+              : "Use brush/erase to paint, drag to create ROIs, click-drag to measure."}
+          </span>
+          {volumeInfo && (
+            <span>
+              Slice {sliceIndex[activeAxis] + 1} / {axisSizes?.[activeAxis] ?? 1}
+            </span>
+          )}
+        </div>
+
+        <div className="toast-stack" aria-live="polite">
+          {notices.map((notice) => (
+            <div key={notice.id} className={`toast toast-${notice.type}`}>
+              <strong>{notice.title}</strong>
+              <p>{notice.message}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="app">
@@ -1243,6 +2851,15 @@ export default function App() {
                     </span>
                   </div>
                 )}
+                {enableViewerWorkspace && uploadPath && (
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-small"
+                    onClick={openWorkspace}
+                  >
+                    Open workspace
+                  </button>
+                )}
               </div>
             </div>
 
@@ -1290,9 +2907,10 @@ export default function App() {
                       </div>
                       <div className="viewer-image">
                         <img
-                          src={buildSliceUrl(axis, sliceIndex[axis])}
+                          src={buildSliceUrl(axis, sliceRequestIndex[axis])}
                           alt={`${axis} slice`}
                           loading="lazy"
+                          decoding="async"
                         />
                       </div>
                       <input
