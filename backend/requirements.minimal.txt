@@ -1,0 +1,12 @@
+# MINIMAL CHATBOT REQUIREMENTS - Python 3.14 Compatible
+# Only includes packages with pre-built wheels for Python 3.14
+
+# Core dependencies (these work on Python 3.14)
+google-generativeai>=0.3.0
+qdrant-client>=1.7.0
+sentence-transformers>=2.2.0
+langchain>=0.1.0
+langchain-google-genai>=0.0.6
+
+# Note: FastAPI and Pydantic require Rust compiler on Python 3.14
+# We'll install compatible versions manually below

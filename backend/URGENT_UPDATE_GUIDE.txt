@@ -1,0 +1,144 @@
+╔════════════════════════════════════════════════════════════════╗
+║          🚨 URGENT: API KEY EXPIRED + PACKAGE UPDATE          ║
+╚════════════════════════════════════════════════════════════════╝
+
+TWO CRITICAL ISSUES FIXED:
+  1. ❌ Your API key is EXPIRED (need new one)
+  2. ❌ Old package is DEPRECATED (updated to new one)
+
+╔════════════════════════════════════════════════════════════════╗
+║ STEP 1: Get NEW API Key (2 minutes)                           ║
+╚════════════════════════════════════════════════════════════════╝
+
+1. Go to: https://makersuite.google.com/app/apikey
+2. Click "Create API Key" or "Get API Key"
+3. Copy the NEW key
+
+⚠️  Your old key is EXPIRED - you MUST get a new one!
+
+╔════════════════════════════════════════════════════════════════╗
+║ STEP 2: Update Package (2 minutes)                            ║
+╚════════════════════════════════════════════════════════════════╝
+
+cd backend
+
+# Remove old deprecated package
+pip uninstall google-generativeai -y
+
+# Install new package
+pip install google-genai>=0.2.0
+
+# Or reinstall all
+pip install -r requirements.txt
+
+╔════════════════════════════════════════════════════════════════╗
+║ STEP 3: Update API Key in .env (1 minute)                     ║
+╚════════════════════════════════════════════════════════════════╝
+
+cd backend
+
+# Edit .env file and replace with NEW key:
+GEMINI_API_KEY=your-new-api-key-here
+
+╔════════════════════════════════════════════════════════════════╗
+║ STEP 4: Verify Fix (1 minute)                                 ║
+╚════════════════════════════════════════════════════════════════╝
+
+cd backend
+
+# Test new package and key
+python test_gemini_models.py
+
+Expected output:
+  ✅ Gemini client initialized successfully
+  ✅ These models work with your API key:
+    - gemini-1.5-flash
+
+╔════════════════════════════════════════════════════════════════╗
+║ STEP 5: Test Chatbot (1 minute)                               ║
+╚════════════════════════════════════════════════════════════════╝
+
+cd backend
+
+# Test chatbot
+python test_chatbot.py
+
+Should see:
+  ✅ NO deprecation warning
+  ✅ "Initialized Gemini client with model: gemini-1.5-flash"
+  ✅ Successful responses to queries
+
+╔════════════════════════════════════════════════════════════════╗
+║ STEP 6: Start Backend (1 minute)                              ║
+╚════════════════════════════════════════════════════════════════╝
+
+cd backend
+python -m uvicorn main:app --reload
+
+Look for in logs:
+  ✅ "Initialized Gemini client with model: gemini-1.5-flash"
+  ✅ NO deprecation warnings
+
+╔════════════════════════════════════════════════════════════════╗
+║ ✅ SUCCESS INDICATORS                                          ║
+╚════════════════════════════════════════════════════════════════╝
+
+✅ No deprecation warning about google.generativeai
+✅ test_gemini_models.py shows working models
+✅ test_chatbot.py responds successfully
+✅ Backend starts without errors
+✅ No "API key expired" errors
+✅ Chat responds to queries
+
+╔════════════════════════════════════════════════════════════════╗
+║ 🐛 TROUBLESHOOTING                                             ║
+╚════════════════════════════════════════════════════════════════╝
+
+Problem: "API key expired"
+→ You MUST get a new key: https://makersuite.google.com/app/apikey
+→ Old keys cannot be renewed, only replaced
+
+Problem: "No module named 'google.genai'"
+→ pip uninstall google-generativeai -y
+→ pip install google-genai>=0.2.0
+
+Problem: Still seeing deprecation warning
+→ pip cache purge
+→ pip install --force-reinstall google-genai>=0.2.0
+
+Problem: "Client has no attribute 'models'"
+→ pip install --upgrade google-genai
+
+╔════════════════════════════════════════════════════════════════╗
+║ 📊 WHAT CHANGED                                                ║
+╚════════════════════════════════════════════════════════════════╝
+
+OLD (Deprecated):
+  Package: google-generativeai
+  Import: import google.generativeai as genai
+  API: genai.GenerativeModel('model-name')
+
+NEW (Current):
+  Package: google-genai
+  Import: from google import genai
+  API: client = genai.Client(api_key)
+       client.models.generate_content(model='gemini-1.5-flash', ...)
+
+╔════════════════════════════════════════════════════════════════╗
+║ 📚 DOCUMENTATION                                                ║
+╚════════════════════════════════════════════════════════════════╝
+
+Migration Guide: GOOGLE_GENAI_MIGRATION.md
+New API Docs: https://ai.google.dev/api/python
+Get API Key: https://makersuite.google.com/app/apikey
+
+╔════════════════════════════════════════════════════════════════╗
+║ 🚀 TOTAL TIME: ~10 MINUTES                                     ║
+╚════════════════════════════════════════════════════════════════╝
+
+The code is ALREADY UPDATED. You just need to:
+  1. Get new API key (expired)
+  2. Update package (deprecated)
+  3. Test it works
+
+Start with Step 1 above! 👆

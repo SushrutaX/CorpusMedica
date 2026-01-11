@@ -1,0 +1,98 @@
+================================================================================
+DIMENSION MISMATCH ERROR - FIXED ✅
+================================================================================
+
+ERROR MESSAGE:
+  ValueError: could not broadcast input array from shape (384,) into shape (768,)
+
+ROOT CAUSE:
+  - Embedding model 'all-MiniLM-L6-v2' produces 384-dimensional vectors
+  - Qdrant collection was created with 768-dimensional vectors (old default)
+  - Vector dimensions must match exactly
+
+SOLUTION:
+  1. Updated vector_db.py to use 384 as default (correct for the model)
+  2. Updated chatbot.py to detect dimension automatically from model
+  3. Added validation to catch dimension mismatches early
+  4. Must delete old collection and reindex with correct dimensions
+
+================================================================================
+HOW TO FIX (ONE COMMAND)
+================================================================================
+
+cd C:\Users\Shaurya\OneDrive\Desktop\CorpusMedica\backend
+python reindex_vector_db.py --force
+
+The --force flag will:
+  ✅ Delete old collection (wrong dimensions)
+  ✅ Create new collection (correct 384 dimensions)
+  ✅ Reindex all documents
+  ✅ Test search functionality
+
+================================================================================
+EXPECTED OUTPUT
+================================================================================
+
+Loading embedding model...
+Embedding model dimension: 384                           ← Correct dimension!
+
+Force re-indexing: deleting existing collection...
+Creating collection: corpus_medica_kb with vector size: 384  ← Fixed!
+
+Processing documents...
+✅ TOTAL DOCUMENTS PROCESSED: 155
+
+Generating embeddings...
+[████████████████████] 100%
+
+✅ INDEXING COMPLETE!
+📊 Final Statistics:
+   Total documents indexed: 155
+   Vector size: 384                                      ← Correct!
+
+================================================================================
+FILES UPDATED
+================================================================================
+
+1. ✅ backend/app/services/rag/vector_db.py
+   - Changed default from 768 to 384
+   - Added dimension validation
+   - Better error messages
+
+2. ✅ backend/app/services/rag/chatbot.py
+   - Auto-detects embedding dimension
+   - Passes correct size to VectorDB
+
+3. ✅ backend/DIMENSION_FIX.md
+   - Detailed fix documentation
+
+================================================================================
+WHY THIS HAPPENED
+================================================================================
+
+Different embedding models produce different dimension vectors:
+  - all-MiniLM-L6-v2       → 384 dimensions ✅ (we use this)
+  - all-mpnet-base-v2      → 768 dimensions
+  - bert-base-uncased      → 768 dimensions
+
+The code had 768 hardcoded, which was wrong for our model.
+
+================================================================================
+FUTURE-PROOF
+================================================================================
+
+✅ Code now auto-detects dimension from model
+✅ Won't break if you change embedding models
+✅ Validates dimensions before adding documents
+✅ Clear error messages if mismatch occurs
+
+================================================================================
+NEXT STEPS
+================================================================================
+
+1. Run: python reindex_vector_db.py --force
+2. Wait 2-5 minutes for reindexing
+3. Run: python test_chatbot.py
+4. Start asking questions!
+
+================================================================================

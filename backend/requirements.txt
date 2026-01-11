@@ -1,16 +1,33 @@
---extra-index-url https://download.pytorch.org/whl/cu121
+# Core FastAPI dependencies
 fastapi==0.115.0
 uvicorn[standard]==0.30.6
 python-multipart==0.0.9
 pydantic==2.8.2
 pydantic-settings==2.4.0
-torch==2.2.2+cu121
+
+# PyTorch - CPU version (works on all systems)
+torch>=2.0.0
+torchvision>=0.15.0
+
+# MONAI and medical imaging
 monai==1.3.0
 nibabel==5.2.1
 pydicom==2.4.4
 dicom2nifti==2.4.10
-numpy==1.26.4
-requests==2.32.3
+
+# NumPy - use newer version with pre-built wheels for Python 3.14
+numpy>=1.26.0,<2.0.0
+
 pytorch-ignite==0.4.11
 einops==0.7.0
-Pillow==10.3.0
+Pillow>=10.0.0
+
+# Other dependencies
+requests==2.32.3
+python-dotenv>=1.0.0
+
+# RAG Chatbot Dependencies
+# Using direct REST API calls - no SDK needed
+requests>=2.31.0
+qdrant-client>=1.7.0
+sentence-transformers>=2.2.0

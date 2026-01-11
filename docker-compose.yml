@@ -9,6 +9,9 @@ services:
       - MODELS_DIR=/models
       - OUTPUTS_DIR=/data/outputs
       - TEMP_DIR=/data/tmp
+      # Chatbot environment variables
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - QDRANT_PATH=/data/qdrant
     volumes:
       - ./backend:/app
       - ./models:/models
