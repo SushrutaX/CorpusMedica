@@ -1,6 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, PointerEvent as ReactPointerEvent } from "react";
 import ChatPanel from './components/ChatPanel';
+
+import type {
+  ChangeEvent,
+  FormEvent,
+  PointerEvent as ReactPointerEvent,
+} from "react";
+import anime from "animejs";
 
 type Model = {
   id: string;

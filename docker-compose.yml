@@ -12,6 +12,9 @@ services:
       # Chatbot environment variables
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - QDRANT_PATH=/data/qdrant
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - AUTH_ENABLED=${AUTH_ENABLED:-false}
+      - AUTH_JWT_SECRET=${AUTH_JWT_SECRET:-change-me}
     volumes:
       - ./backend:/app
       - ./models:/models
