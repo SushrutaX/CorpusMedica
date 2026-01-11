@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ChangeEvent, PointerEvent as ReactPointerEvent } from "react";
+import type {
+  ChangeEvent,
+  FormEvent,
+  PointerEvent as ReactPointerEvent,
+} from "react";
+import anime from "animejs";
 
 type Model = {
   id: string;
@@ -50,6 +55,25 @@ type ResultsResponse = {
     report_path: string;
   };
   error_message?: string | null;
+};
+
+type AuthTokens = {
+  access: string;
+  refresh: string;
+};
+
+type AuthUser = {
+  id: number;
+  username: string;
+  email: string;
+  role: string;
+  is_staff: boolean;
+  is_superuser: boolean;
+};
+
+type PasswordResetResponse = {
+  detail: string;
+  already_verified?: boolean;
 };
 
 type UploadPreview = {
@@ -116,6 +140,12 @@ type WorkspaceTool = "brush" | "erase" | "rect" | "measure";
 type ClipAxis = "x" | "y" | "z";
 type PanelId = "left" | "right";
 type ResizeCorner = "nw" | "ne" | "sw" | "se";
+type AuthStep =
+  | "login"
+  | "forgot-request"
+  | "forgot-verify"
+  | "verify-request"
+  | "verify-confirm";
 
 type PanelPosition = {
   x: number;
@@ -179,10 +209,14 @@ type Viewer3DState = {
 
 const API_BASE: string =
   (import.meta.env.VITE_API_BASE_URL as string) || "http://localhost:8000";
+const AUTH_BASE: string =
+  (import.meta.env.VITE_AUTH_BASE_URL as string) || "http://localhost:9000";
+const AUTH_REQUIRED =
+  ((import.meta.env.VITE_AUTH_REQUIRED as string) ?? "false") === "true";
+const AUTH_TOKEN_KEY = "medai_auth_token";
+const AUTH_REFRESH_KEY = "medai_auth_refresh";
 
 const SKELETONS = Array.from({ length: 3 }, (_, index) => index);
-const buildDownloadUrl = (path: string) =>
-  `${API_BASE}/api/download?path=${encodeURIComponent(path)}`;
 const enable3DViewer =
   ((import.meta.env.VITE_ENABLE_3D_VIEWER as string) ?? "true") === "true";
 const enableViewerWorkspace =
@@ -257,6 +291,32 @@ export default function App() {
   const [models, setModels] = useState<Model[]>([]);
   const [modelsLoading, setModelsLoading] = useState<boolean>(false);
   const [selectedModelId, setSelectedModelId] = useState<string>("");
+  const [authToken, setAuthToken] = useState<string>(() => {
+    return localStorage.getItem(AUTH_TOKEN_KEY) ?? "";
+  });
+  const [, setAuthRefresh] = useState<string>(() => {
+    return localStorage.getItem(AUTH_REFRESH_KEY) ?? "";
+  });
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  const [authLoading, setAuthLoading] = useState<boolean>(false);
+  const [authChecked, setAuthChecked] = useState<boolean>(false);
+  const [authError, setAuthError] = useState<string>("");
+  const [authNotice, setAuthNotice] = useState<string>("");
+  const [authUsername, setAuthUsername] = useState<string>("");
+  const [authPassword, setAuthPassword] = useState<string>("");
+  const [authStep, setAuthStep] = useState<AuthStep>("login");
+  const [forgotIdentifier, setForgotIdentifier] = useState<string>("");
+  const [forgotOtp, setForgotOtp] = useState<string>("");
+  const [forgotPassword, setForgotPassword] = useState<string>("");
+  const [forgotConfirm, setForgotConfirm] = useState<string>("");
+  const [forgotError, setForgotError] = useState<string>("");
+  const [forgotNotice, setForgotNotice] = useState<string>("");
+  const [forgotLoading, setForgotLoading] = useState<boolean>(false);
+  const [verifyIdentifier, setVerifyIdentifier] = useState<string>("");
+  const [verifyOtp, setVerifyOtp] = useState<string>("");
+  const [verifyError, setVerifyError] = useState<string>("");
+  const [verifyNotice, setVerifyNotice] = useState<string>("");
+  const [verifyLoading, setVerifyLoading] = useState<boolean>(false);
   const [files, setFiles] = useState<File[]>([]);
   const [uploadResult, setUploadResult] = useState<UploadResponse | null>(null);
   const [uploading, setUploading] = useState<boolean>(false);
@@ -348,6 +408,7 @@ export default function App() {
   });
   const leftPanelRef = useRef<HTMLDivElement | null>(null);
   const rightPanelRef = useRef<HTMLDivElement | null>(null);
+  const loginScreenRef = useRef<HTMLDivElement | null>(null);
   const slicePrefetchRef = useRef<SliceIndex | null>(null);
   const dragStateRef = useRef<{
     panel: PanelId;
@@ -368,7 +429,7 @@ export default function App() {
   const isWorkspace = useMemo(() => {
     const params = new URLSearchParams(window.location.search);
     return enableViewerWorkspace && params.get("workspace") === "viewer";
-  }, []);
+  }, [enableViewerWorkspace]);
 
   useEffect(() => {
     if (!isWorkspace) return undefined;
@@ -430,6 +491,80 @@ export default function App() {
   );
   const recentJobs = useMemo(() => jobHistory.slice(0, 6), [jobHistory]);
   const uploadPath = workspacePath || uploadResult?.saved_path || "";
+  const isAuthenticated = Boolean(authToken && authUser);
+  const authDisplayName = authUser?.email || authUser?.username || "User";
+  const authRoleLabel = authUser?.role || "";
+  const showLogin = AUTH_REQUIRED && authChecked && !authUser;
+  const showAuthGate = AUTH_REQUIRED && !authChecked;
+  const isAuthFlow = authStep !== "login";
+  const isForgotFlow =
+    authStep === "forgot-request" || authStep === "forgot-verify";
+  const isVerifyFlow =
+    authStep === "verify-request" || authStep === "verify-confirm";
+
+  useEffect(() => {
+    if (!showLogin) return undefined;
+    const prevOverflow = document.body.style.overflow;
+    const prevHeight = document.body.style.height;
+    document.body.style.overflow = "hidden";
+    document.body.style.height = "100vh";
+    return () => {
+      document.body.style.overflow = prevOverflow;
+      document.body.style.height = prevHeight;
+    };
+  }, [showLogin]);
+
+  const resetAuthFlow = useCallback(() => {
+    setForgotIdentifier("");
+    setForgotOtp("");
+    setForgotPassword("");
+    setForgotConfirm("");
+    setForgotError("");
+    setForgotNotice("");
+    setForgotLoading(false);
+    setVerifyIdentifier("");
+    setVerifyOtp("");
+    setVerifyError("");
+    setVerifyNotice("");
+    setVerifyLoading(false);
+    setAuthStep("login");
+  }, []);
+
+  const clearAuthSession = useCallback((): void => {
+    localStorage.removeItem(AUTH_TOKEN_KEY);
+    localStorage.removeItem(AUTH_REFRESH_KEY);
+    setAuthToken("");
+    setAuthRefresh("");
+    setAuthUser(null);
+  }, []);
+
+  const apiFetch = useCallback(
+    (url: string, init?: RequestInit): Promise<Response> => {
+      const headers = new Headers(init?.headers || {});
+      if (authToken) {
+        headers.set("Authorization", `Bearer ${authToken}`);
+      }
+      return fetch(url, { ...init, headers }).then((res) => {
+        if (res.status === 401 && authToken) {
+          clearAuthSession();
+          setAuthError("Session expired. Please sign in again.");
+        }
+        return res;
+      });
+    },
+    [authToken, clearAuthSession]
+  );
+
+  const buildDownloadUrl = useCallback(
+    (path: string): string => {
+      const params = new URLSearchParams({ path });
+      if (authToken) {
+        params.set("token", authToken);
+      }
+      return `${API_BASE}/api/download?${params.toString()}`;
+    },
+    [authToken]
+  );
 
   const pushNotice = useCallback(
     (type: Notice["type"], title: string, message: string) => {
@@ -450,7 +585,7 @@ export default function App() {
       try {
         setError("");
         setModelsLoading(true);
-        const res = await fetch(`${API_BASE}/api/models`);
+        const res = await apiFetch(`${API_BASE}/api/models`);
         if (!res.ok) throw new Error(`Models API failed (${res.status})`);
         const data = (await res.json()) as ModelsResponse;
         if (!active) return;
@@ -466,17 +601,25 @@ export default function App() {
       }
     }
 
+    if (AUTH_REQUIRED && !isAuthenticated) {
+      setModels([]);
+      setModelsLoading(false);
+      return () => {
+        active = false;
+      };
+    }
+
     loadModels();
     return () => {
       active = false;
     };
-  }, [pushNotice]);
+  }, [pushNotice, apiFetch, isAuthenticated]);
 
   const loadHistory = useCallback(async () => {
     try {
       setHistoryError("");
       setHistoryLoading(true);
-      const res = await fetch(`${API_BASE}/api/jobs`);
+      const res = await apiFetch(`${API_BASE}/api/jobs`);
       if (!res.ok) throw new Error(`Jobs API failed (${res.status})`);
       const data = (await res.json()) as JobHistoryItem[];
       setJobHistory(Array.isArray(data) ? data : []);
@@ -487,23 +630,25 @@ export default function App() {
     } finally {
       setHistoryLoading(false);
     }
-  }, []);
+  }, [apiFetch]);
 
   useEffect(() => {
+    if (AUTH_REQUIRED && !isAuthenticated) return;
     loadHistory();
-  }, [loadHistory]);
+  }, [loadHistory, isAuthenticated]);
 
   useEffect(() => {
+    if (AUTH_REQUIRED && !isAuthenticated) return;
     if (jobStatus === "done") {
       loadHistory();
     }
-  }, [jobStatus, loadHistory]);
+  }, [jobStatus, loadHistory, isAuthenticated]);
 
   const fetchVolumeInfo = useCallback(async (path: string) => {
     try {
       setViewerError("");
       setViewerLoading(true);
-      const res = await fetch(
+      const res = await apiFetch(
         `${API_BASE}/api/uploads/volume-info?path=${encodeURIComponent(path)}`
       );
       if (!res.ok) throw new Error(`Viewer API failed (${res.status})`);
@@ -517,7 +662,7 @@ export default function App() {
     } finally {
       setViewerLoading(false);
     }
-  }, []);
+  }, [apiFetch]);
 
   useEffect(() => {
     if (!uploadPath) {
@@ -525,18 +670,20 @@ export default function App() {
       setViewerError("");
       return;
     }
+    if (AUTH_REQUIRED && !isAuthenticated) return;
     fetchVolumeInfo(uploadPath);
-  }, [fetchVolumeInfo, uploadPath]);
+  }, [fetchVolumeInfo, uploadPath, isAuthenticated]);
 
   useEffect(() => {
     if (!uploadPath) {
       setPreviewPath("");
       return;
     }
+    if (AUTH_REQUIRED && !isAuthenticated) return;
     if (previewPath === uploadPath) return;
     const fetchPreview = async () => {
       try {
-        const previewRes = await fetch(
+        const previewRes = await apiFetch(
           `${API_BASE}/api/uploads/preview?path=${encodeURIComponent(uploadPath)}`
         );
         if (!previewRes.ok) return;
@@ -548,7 +695,7 @@ export default function App() {
       }
     };
     void fetchPreview();
-  }, [uploadPath, previewPath]);
+  }, [uploadPath, previewPath, apiFetch, isAuthenticated]);
 
   useEffect(() => {
     if (!volumeInfo || volumeInfo.shape.length < 3) return;
@@ -576,10 +723,14 @@ export default function App() {
       channel: String(viewerChannel),
       t: String(Date.now()),
     });
+    if (authToken) {
+      params.set("token", authToken);
+    }
     return `${API_BASE}/api/uploads/volume-file?${params.toString()}`;
-  }, [uploadPath, viewerChannel]);
+  }, [uploadPath, viewerChannel, authToken]);
 
   useEffect(() => {
+    if (AUTH_REQUIRED && !isAuthenticated) return;
     if (!enable3DViewer || viewerMode !== "3d") {
       if (viewerCleanupRef.current) {
         viewerCleanupRef.current();
@@ -692,7 +843,7 @@ export default function App() {
 
         renderer.setBackground(0.97, 0.98, 1);
 
-        const response = await fetch(buildVolumeFileUrl());
+        const response = await apiFetch(buildVolumeFileUrl());
         if (!response.ok) {
           throw new Error(`Volume download failed (${response.status})`);
         }
@@ -911,7 +1062,14 @@ export default function App() {
         viewerCleanupRef.current = null;
       }
     };
-  }, [viewerMode, uploadPath, viewerChannel, buildVolumeFileUrl]);
+  }, [
+    viewerMode,
+    uploadPath,
+    viewerChannel,
+    buildVolumeFileUrl,
+    apiFetch,
+    isAuthenticated,
+  ]);
 
   useEffect(() => {
     const state = viewer3dStateRef.current;
@@ -977,6 +1135,7 @@ export default function App() {
   }, [clipEnabled, clipAxis, clipValue]);
 
   useEffect(() => {
+    if (AUTH_REQUIRED && !isAuthenticated) return undefined;
     if (!jobId) return undefined;
 
     let active = true;
@@ -984,7 +1143,7 @@ export default function App() {
 
     const poll = async () => {
       try {
-        const res = await fetch(`${API_BASE}/api/results/${jobId}`);
+        const res = await apiFetch(`${API_BASE}/api/results/${jobId}`);
         if (!res.ok) throw new Error(`Results API failed (${res.status})`);
         const data = (await res.json()) as ResultsResponse;
         if (!active) return;
@@ -1027,7 +1186,7 @@ export default function App() {
       active = false;
       if (timeoutId) window.clearTimeout(timeoutId);
     };
-  }, [jobId, pushNotice]);
+  }, [jobId, pushNotice, apiFetch, isAuthenticated]);
 
   const isReady = Boolean(
     uploadResult && selectedModelId && selectedModel?.available
@@ -1108,9 +1267,12 @@ export default function App() {
         channel: String(viewerChannel),
         colormap: sliceColormap,
       });
+      if (authToken) {
+        params.set("token", authToken);
+      }
       return `${API_BASE}/api/uploads/slice?${params.toString()}`;
     },
-    [uploadPath, viewerChannel, sliceColormap]
+    [uploadPath, viewerChannel, sliceColormap, authToken]
   );
 
   useEffect(() => {
@@ -1179,6 +1341,307 @@ export default function App() {
     setJobResult(null);
   };
 
+  const handleLogin = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!authUsername || !authPassword) {
+      setAuthError("Enter your username and password to continue.");
+      return;
+    }
+    try {
+      setAuthError("");
+      setAuthNotice("");
+      setAuthLoading(true);
+      const res = await fetch(`${AUTH_BASE}/api/token/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          username: authUsername.trim(),
+          password: authPassword,
+        }),
+      });
+      const payload = (await res.json().catch(() => null)) as
+        | Record<string, unknown>
+        | null;
+      if (!res.ok) {
+        const detail =
+          (typeof payload?.detail === "string" && payload.detail) ||
+          (Array.isArray(payload?.detail) && payload?.detail[0]) ||
+          (Array.isArray(payload?.non_field_errors) &&
+            payload?.non_field_errors[0]) ||
+          "Invalid credentials. Please try again.";
+        throw new Error(detail);
+      }
+      const data = payload as AuthTokens;
+      localStorage.setItem(AUTH_TOKEN_KEY, data.access);
+      localStorage.setItem(AUTH_REFRESH_KEY, data.refresh);
+      setAuthToken(data.access);
+      setAuthRefresh(data.refresh);
+    } catch (e: unknown) {
+      const message =
+        e instanceof Error ? e.message : "Unable to sign in right now.";
+      setAuthError(message);
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleLogout = () => {
+    clearAuthSession();
+    setAuthError("");
+    setAuthNotice("");
+    setAuthUsername("");
+    setAuthPassword("");
+    resetAuthFlow();
+  };
+
+  const requestPasswordCode = useCallback(
+    async (identifier: string): Promise<string> => {
+      const res = await fetch(`${AUTH_BASE}/api/password/forgot/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ identifier }),
+      });
+      const data = (await res.json().catch(() => null)) as
+        | PasswordResetResponse
+        | null;
+      if (!res.ok) {
+        throw new Error(data?.detail || "Unable to send the code.");
+      }
+      return data?.detail || "Check your email for the code.";
+    },
+    []
+  );
+
+  const handleForgotStart = () => {
+    setAuthError("");
+    setAuthNotice("");
+    setForgotError("");
+    setForgotNotice("");
+    setAuthStep("forgot-request");
+  };
+
+  const handleForgotCancel = () => {
+    setForgotError("");
+    setForgotNotice("");
+    setForgotOtp("");
+    setForgotPassword("");
+    setForgotConfirm("");
+    setAuthStep("login");
+  };
+
+  const handleForgotRequest = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!forgotIdentifier.trim()) {
+      setForgotError("Enter your email or username.");
+      return;
+    }
+    try {
+      setForgotError("");
+      setForgotNotice("");
+      setForgotLoading(true);
+      const detail = await requestPasswordCode(forgotIdentifier.trim());
+      setForgotNotice(detail);
+      setAuthStep("forgot-verify");
+    } catch (e: unknown) {
+      const message =
+        e instanceof Error ? e.message : "Unable to send the code.";
+      setForgotError(message);
+    } finally {
+      setForgotLoading(false);
+    }
+  };
+
+  const handleForgotResend = async () => {
+    if (!forgotIdentifier.trim()) {
+      setForgotError("Enter your email or username.");
+      return;
+    }
+    try {
+      setForgotError("");
+      setForgotNotice("");
+      setForgotLoading(true);
+      const detail = await requestPasswordCode(forgotIdentifier.trim());
+      setForgotNotice(detail);
+    } catch (e: unknown) {
+      const message =
+        e instanceof Error ? e.message : "Unable to resend the code.";
+      setForgotError(message);
+    } finally {
+      setForgotLoading(false);
+    }
+  };
+
+  const handleForgotReset = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!forgotOtp.trim() || !forgotPassword || !forgotConfirm) {
+      setForgotError("Complete every field to continue.");
+      return;
+    }
+    if (forgotPassword !== forgotConfirm) {
+      setForgotError("Passwords do not match.");
+      return;
+    }
+    try {
+      setForgotError("");
+      setForgotNotice("");
+      setForgotLoading(true);
+      const res = await fetch(`${AUTH_BASE}/api/password/reset/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          identifier: forgotIdentifier.trim(),
+          otp: forgotOtp.trim(),
+          new_password: forgotPassword,
+        }),
+      });
+      const data = (await res.json().catch(() => null)) as
+        | PasswordResetResponse
+        | null;
+      if (!res.ok) {
+        throw new Error(data?.detail || "Unable to reset the password.");
+      }
+      setAuthNotice("Password updated. Sign in with your new password.");
+      setAuthStep("login");
+      setForgotOtp("");
+      setForgotPassword("");
+      setForgotConfirm("");
+      setForgotError("");
+      setForgotNotice("");
+    } catch (e: unknown) {
+      const message =
+        e instanceof Error ? e.message : "Unable to reset the password.";
+      setForgotError(message);
+    } finally {
+      setForgotLoading(false);
+    }
+  };
+
+  const requestVerificationCode = useCallback(
+    async (identifier: string): Promise<PasswordResetResponse> => {
+      const res = await fetch(`${AUTH_BASE}/api/email/verify/request/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ identifier }),
+      });
+      const data = (await res.json().catch(() => null)) as
+        | PasswordResetResponse
+        | null;
+      if (!res.ok) {
+        throw new Error(data?.detail || "Unable to send the verification code.");
+      }
+      return {
+        detail: data?.detail || "Check your email for the code.",
+        already_verified: data?.already_verified,
+      };
+    },
+    []
+  );
+
+  const handleVerifyStart = () => {
+    setAuthError("");
+    setAuthNotice("");
+    setVerifyError("");
+    setVerifyNotice("");
+    setAuthStep("verify-request");
+  };
+
+  const handleVerifyCancel = () => {
+    setVerifyError("");
+    setVerifyNotice("");
+    setVerifyOtp("");
+    setAuthStep("login");
+  };
+
+  const handleVerifyRequest = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!verifyIdentifier.trim()) {
+      setVerifyError("Enter your email or username.");
+      return;
+    }
+    try {
+      setVerifyError("");
+      setVerifyNotice("");
+      setVerifyLoading(true);
+      const response = await requestVerificationCode(verifyIdentifier.trim());
+      if (response.already_verified) {
+        setAuthNotice("Email already verified. You can sign in now.");
+        setAuthStep("login");
+        return;
+      }
+      setVerifyNotice(response.detail);
+      setAuthStep("verify-confirm");
+    } catch (e: unknown) {
+      const message =
+        e instanceof Error ? e.message : "Unable to send the verification code.";
+      setVerifyError(message);
+    } finally {
+      setVerifyLoading(false);
+    }
+  };
+
+  const handleVerifyResend = async () => {
+    if (!verifyIdentifier.trim()) {
+      setVerifyError("Enter your email or username.");
+      return;
+    }
+    try {
+      setVerifyError("");
+      setVerifyNotice("");
+      setVerifyLoading(true);
+      const response = await requestVerificationCode(verifyIdentifier.trim());
+      if (response.already_verified) {
+        setAuthNotice("Email already verified. You can sign in now.");
+        setAuthStep("login");
+        return;
+      }
+      setVerifyNotice(response.detail);
+    } catch (e: unknown) {
+      const message =
+        e instanceof Error ? e.message : "Unable to resend the code.";
+      setVerifyError(message);
+    } finally {
+      setVerifyLoading(false);
+    }
+  };
+
+  const handleVerifyConfirm = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!verifyIdentifier.trim() || !verifyOtp.trim()) {
+      setVerifyError("Enter the code and your email or username.");
+      return;
+    }
+    try {
+      setVerifyError("");
+      setVerifyNotice("");
+      setVerifyLoading(true);
+      const res = await fetch(`${AUTH_BASE}/api/email/verify/confirm/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          identifier: verifyIdentifier.trim(),
+          otp: verifyOtp.trim(),
+        }),
+      });
+      const data = (await res.json().catch(() => null)) as
+        | PasswordResetResponse
+        | null;
+      if (!res.ok) {
+        throw new Error(data?.detail || "Unable to verify the email.");
+      }
+      setAuthNotice("Email verified. You can sign in now.");
+      setAuthStep("login");
+      setVerifyOtp("");
+      setVerifyError("");
+      setVerifyNotice("");
+    } catch (e: unknown) {
+      const message =
+        e instanceof Error ? e.message : "Unable to verify the email.";
+      setVerifyError(message);
+    } finally {
+      setVerifyLoading(false);
+    }
+  };
+
   const handleUpload = async () => {
     if (files.length === 0) {
       setError("Please select a file first.");
@@ -1203,7 +1666,7 @@ export default function App() {
       }
 
       const endpoint = files.length === 1 ? "/api/uploads" : "/api/uploads/batch";
-      const res = await fetch(`${API_BASE}${endpoint}`, {
+      const res = await apiFetch(`${API_BASE}${endpoint}`, {
         method: "POST",
         body: form,
       });
@@ -1217,7 +1680,7 @@ export default function App() {
 
       const savedPath = "saved_path" in data ? data.saved_path : "";
       if (savedPath) {
-        const previewRes = await fetch(
+        const previewRes = await apiFetch(
           `${API_BASE}/api/uploads/preview?path=${encodeURIComponent(savedPath)}`
         );
         if (previewRes.ok) {
@@ -1260,7 +1723,7 @@ export default function App() {
       setJobResult(null);
       setJobStatus("queued");
 
-      const res = await fetch(`${API_BASE}/api/segment`, {
+      const res = await apiFetch(`${API_BASE}/api/segment`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1372,6 +1835,198 @@ export default function App() {
     },
     []
   );
+
+
+  useEffect(() => {
+    let active = true;
+    if (!AUTH_REQUIRED && !authToken) {
+      setAuthChecked(true);
+      return () => {
+        active = false;
+      };
+    }
+    setAuthChecked(false);
+    if (!authToken) {
+      setAuthUser(null);
+      setAuthChecked(true);
+      return () => {
+        active = false;
+      };
+    }
+    const checkAuth = async () => {
+      try {
+        setAuthLoading(true);
+        setAuthError("");
+        const res = await fetch(`${AUTH_BASE}/api/me/`, {
+          headers: { Authorization: `Bearer ${authToken}` },
+        });
+        if (!res.ok) {
+          if (res.status === 401) {
+            if (active) {
+              clearAuthSession();
+              setAuthError("Session expired. Please sign in again.");
+            }
+            return;
+          }
+          throw new Error(`Auth check failed (${res.status})`);
+        }
+        const data = (await res.json()) as AuthUser;
+        if (active) setAuthUser(data);
+      } catch (e: unknown) {
+        if (!active) return;
+        const message =
+          e instanceof Error ? e.message : "Unable to verify session.";
+        setAuthError(message);
+      } finally {
+        if (active) {
+          setAuthLoading(false);
+          setAuthChecked(true);
+        }
+      }
+    };
+    void checkAuth();
+    return () => {
+      active = false;
+    };
+  }, [authToken, clearAuthSession]);
+
+  useEffect(() => {
+    if (!showLogin) return;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+
+    const timeline = anime.timeline({
+      easing: "easeOutExpo",
+      duration: 800,
+    });
+
+    timeline
+      .add({
+        targets: ".login-hero",
+        opacity: [0, 1],
+        translateY: [24, 0],
+      })
+      .add(
+        {
+          targets: ".login-card",
+          opacity: [0, 1],
+          translateY: [32, 0],
+        },
+        "-=600"
+      )
+      .add(
+        {
+          targets: ".login-accent-line",
+          scaleX: [0, 1],
+        },
+        "-=520"
+      )
+      .add(
+        {
+          targets: ".login-point",
+          opacity: [0, 1],
+          translateX: [-14, 0],
+          delay: anime.stagger(120),
+        },
+        "-=480"
+      )
+      .add(
+        {
+          targets: ".login-stat-card",
+          opacity: [0, 1],
+          translateY: [16, 0],
+          delay: anime.stagger(120),
+        },
+        "-=420"
+      );
+
+    const floaters = anime({
+      targets: ".login-orb",
+      translateY: [0, -18],
+      direction: "alternate",
+      loop: true,
+      easing: "easeInOutSine",
+      duration: 4200,
+      delay: anime.stagger(250),
+    });
+
+    const orbit = anime({
+      targets: ".login-orbit",
+      rotate: "1turn",
+      duration: 26000,
+      easing: "linear",
+      loop: true,
+    });
+
+    const gridDrift = anime({
+      targets: ".login-grid",
+      backgroundPosition: ["0px 0px", "120px 120px"],
+      duration: 18000,
+      easing: "linear",
+      loop: true,
+    });
+
+    const scanline = anime({
+      targets: ".login-scanline",
+      translateY: ["-60%", "130%"],
+      duration: 4600,
+      easing: "easeInOutSine",
+      loop: true,
+    });
+
+    const signal = anime({
+      targets: ".login-signal-bar",
+      scaleY: [0.3, 1],
+      direction: "alternate",
+      easing: "easeInOutSine",
+      duration: 900,
+      delay: anime.stagger(120),
+      loop: true,
+    });
+
+    const statusPulse = anime({
+      targets: ".login-status-dot",
+      scale: [1, 1.45],
+      opacity: [0.6, 1],
+      easing: "easeInOutSine",
+      direction: "alternate",
+      duration: 1400,
+      loop: true,
+    });
+
+    const stars = anime({
+      targets: ".login-star",
+      opacity: [0.2, 0.85],
+      scale: [0.6, 1],
+      direction: "alternate",
+      easing: "easeInOutSine",
+      duration: 3600,
+      delay: anime.stagger(220),
+      loop: true,
+    });
+
+    return () => {
+      timeline.pause();
+      floaters.pause();
+      orbit.pause();
+      gridDrift.pause();
+      scanline.pause();
+      signal.pause();
+      statusPulse.pause();
+      stars.pause();
+    };
+  }, [showLogin]);
+
+  useEffect(() => {
+    if (!showLogin) return;
+    const screen = loginScreenRef.current;
+    if (!screen) return;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+
+    screen.style.setProperty("--login-tilt-x", "0deg");
+    screen.style.setProperty("--login-tilt-y", "0deg");
+    screen.style.setProperty("--login-glow-x", "50%");
+    screen.style.setProperty("--login-glow-y", "50%");
+  }, [showLogin]);
 
   const beginPanelResize = useCallback(
     (panel: PanelId, corner: ResizeCorner) =>
@@ -1867,6 +2522,458 @@ export default function App() {
     return set?.items.length ?? 0;
   }, [annotationVersion, activeAxis, getAnnotationKey]);
 
+  const loginBackdrop = (
+    <div className="login-background" aria-hidden="true">
+      <div className="login-orb orb-1" />
+      <div className="login-orb orb-2" />
+      <div className="login-orb orb-3" />
+      <div className="login-orb orb-4" />
+      <div className="login-orbit orbit-1" />
+      <div className="login-orbit orbit-2" />
+      <div className="login-beams" />
+      <div className="login-grid" />
+      <div className="login-constellation">
+        <span className="login-star s1" />
+        <span className="login-star s2" />
+        <span className="login-star s3" />
+        <span className="login-star s4" />
+        <span className="login-star s5" />
+        <span className="login-star s6" />
+        <span className="login-star s7" />
+        <span className="login-star s8" />
+        <span className="login-star s9" />
+        <span className="login-star s10" />
+      </div>
+      <div className="login-scanline" />
+      <div className="login-noise" />
+      <div className="login-vignette" />
+    </div>
+  );
+
+  if (showAuthGate) {
+    return (
+      <div className="login-screen" ref={loginScreenRef}>
+        {loginBackdrop}
+        <div className="login-shell">
+          <div className="login-card login-card-loading">
+            <div className="login-card-glow" aria-hidden="true" />
+            <div className="login-card-grid" aria-hidden="true" />
+            <div className="login-spinner" />
+            <h2>Preparing your workspace</h2>
+            <p>Just a moment while we get things ready.</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (showLogin) {
+    return (
+      <div className="login-screen" ref={loginScreenRef}>
+        {loginBackdrop}
+        <div className="login-shell">
+          <div className="login-hero">
+            <div className="login-hero-top">
+              <span className="pill">Secure workspace | For care teams</span>
+              <div className="login-status">
+                <span className="login-status-dot" />
+                <span>Ready for today's cases</span>
+              </div>
+            </div>
+            <h1 className="login-title">
+              Welcome to <span>Corpus Medica</span>
+            </h1>
+            <p className="login-lead">
+              Upload scans, explore results, and share insights with your team
+              in one calm, focused workspace.
+            </p>
+            <div className="login-accent-line" />
+            <div className="login-points">
+              <div className="login-point">
+                Upload scans in seconds.
+              </div>
+              <div className="login-point">
+                Run a model with one click.
+              </div>
+              <div className="login-point">
+                Review results in 2D or 3D.
+              </div>
+            </div>
+            <div className="login-stats">
+              <div className="login-stat-card">
+                <span className="label">Cases today</span>
+                <strong>1,482</strong>
+                <div className="login-stat-foot">Across all workspaces</div>
+              </div>
+              <div className="login-stat-card">
+                <span className="label">Average time</span>
+                <strong>4.6m</strong>
+                <div className="login-signal" aria-hidden="true">
+                  <span className="login-signal-bar" />
+                  <span className="login-signal-bar" />
+                  <span className="login-signal-bar" />
+                  <span className="login-signal-bar" />
+                  <span className="login-signal-bar" />
+                </div>
+              </div>
+              <div className="login-stat-card">
+                <span className="label">Teams connected</span>
+                <strong>99.98%</strong>
+                <div className="login-stat-foot">Available when you need it</div>
+              </div>
+            </div>
+          </div>
+          <div className="login-card">
+            <div className="login-card-glow" aria-hidden="true" />
+            <div className="login-card-grid" aria-hidden="true" />
+            <div className="login-card-head">
+              <h2>
+                {isForgotFlow
+                  ? authStep === "forgot-request"
+                    ? "Reset your password"
+                    : "Enter the code"
+                  : isVerifyFlow
+                    ? authStep === "verify-request"
+                      ? "Verify your email"
+                      : "Enter the code"
+                    : "Sign in to continue"}
+              </h2>
+              <p>
+                {isForgotFlow
+                  ? authStep === "forgot-request"
+                    ? "We will email a short code to verify it is you."
+                    : "Check your inbox for the code we just sent."
+                  : isVerifyFlow
+                    ? authStep === "verify-request"
+                      ? "We will send a quick code to confirm your email."
+                      : "Enter the code to finish verification."
+                    : "Use the account provided by your organization."}
+              </p>
+            </div>
+            {!isAuthFlow && authNotice && (
+              <div className="login-success" role="status">
+                {authNotice}
+              </div>
+            )}
+            {!isAuthFlow && authError && (
+              <div className="login-error" role="alert">
+                {authError}
+              </div>
+            )}
+            {isForgotFlow && forgotNotice && (
+              <div className="login-success" role="status">
+                {forgotNotice}
+              </div>
+            )}
+            {isForgotFlow && forgotError && (
+              <div className="login-error" role="alert">
+                {forgotError}
+              </div>
+            )}
+            {isVerifyFlow && verifyNotice && (
+              <div className="login-success" role="status">
+                {verifyNotice}
+              </div>
+            )}
+            {isVerifyFlow && verifyError && (
+              <div className="login-error" role="alert">
+                {verifyError}
+              </div>
+            )}
+            {authStep === "login" && (
+              <>
+                <form className="login-form" onSubmit={handleLogin}>
+                  <label className="login-field">
+                    <span>Username or email</span>
+                    <input
+                      type="text"
+                      value={authUsername}
+                      onChange={(event) => {
+                        setAuthUsername(event.target.value);
+                        if (authError) setAuthError("");
+                        if (authNotice) setAuthNotice("");
+                      }}
+                      placeholder="dr_singh or dr_singh@clinic.com"
+                      autoComplete="username"
+                      required
+                    />
+                  </label>
+                  <label className="login-field">
+                    <span>Password</span>
+                    <input
+                      type="password"
+                      value={authPassword}
+                      onChange={(event) => {
+                        setAuthPassword(event.target.value);
+                        if (authError) setAuthError("");
+                        if (authNotice) setAuthNotice("");
+                      }}
+                      placeholder="enter your password"
+                      autoComplete="current-password"
+                      required
+                    />
+                  </label>
+                  <button
+                    type="submit"
+                    className="btn btn-accent btn-block"
+                    disabled={authLoading}
+                  >
+                    {authLoading ? "Signing in..." : "Sign in"}
+                  </button>
+                </form>
+                <div className="login-links">
+                  <button
+                    type="button"
+                    className="login-link"
+                    onClick={handleForgotStart}
+                  >
+                    Forgot password?
+                  </button>
+                  <button
+                    type="button"
+                    className="login-link"
+                    onClick={handleVerifyStart}
+                  >
+                    Verify email
+                  </button>
+                </div>
+                <div className="login-meta">
+                  Need an account? Ask your admin for access.
+                </div>
+              </>
+            )}
+            {authStep === "forgot-request" && (
+              <>
+                <form className="login-form" onSubmit={handleForgotRequest}>
+                  <label className="login-field">
+                    <span>Email or username</span>
+                    <input
+                      type="text"
+                      value={forgotIdentifier}
+                      onChange={(event) => {
+                        setForgotIdentifier(event.target.value);
+                        if (forgotError) setForgotError("");
+                        if (forgotNotice) setForgotNotice("");
+                      }}
+                      placeholder="name@hospital.org or dr_singh"
+                      autoComplete="email"
+                      required
+                    />
+                  </label>
+                  <button
+                    type="submit"
+                    className="btn btn-accent btn-block"
+                    disabled={forgotLoading}
+                  >
+                    {forgotLoading ? "Sending code..." : "Send code"}
+                  </button>
+                </form>
+                <div className="login-links">
+                  <button
+                    type="button"
+                    className="login-link"
+                    onClick={handleForgotCancel}
+                    disabled={forgotLoading}
+                  >
+                    Back to sign in
+                  </button>
+                </div>
+              </>
+            )}
+            {authStep === "forgot-verify" && (
+              <>
+                <form className="login-form" onSubmit={handleForgotReset}>
+                  <label className="login-field">
+                    <span>Email or username</span>
+                    <input
+                      type="text"
+                      value={forgotIdentifier}
+                      onChange={(event) => {
+                        setForgotIdentifier(event.target.value);
+                        if (forgotError) setForgotError("");
+                        if (forgotNotice) setForgotNotice("");
+                      }}
+                      placeholder="name@hospital.org or dr_singh"
+                      autoComplete="email"
+                      required
+                    />
+                  </label>
+                  <label className="login-field">
+                    <span>Verification code</span>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      value={forgotOtp}
+                      onChange={(event) => {
+                        setForgotOtp(event.target.value);
+                        if (forgotError) setForgotError("");
+                      }}
+                      placeholder="6-digit code"
+                      autoComplete="one-time-code"
+                      required
+                    />
+                  </label>
+                  <label className="login-field">
+                    <span>New password</span>
+                    <input
+                      type="password"
+                      value={forgotPassword}
+                      onChange={(event) => {
+                        setForgotPassword(event.target.value);
+                        if (forgotError) setForgotError("");
+                      }}
+                      placeholder="Create a new password"
+                      autoComplete="new-password"
+                      required
+                    />
+                  </label>
+                  <label className="login-field">
+                    <span>Confirm password</span>
+                    <input
+                      type="password"
+                      value={forgotConfirm}
+                      onChange={(event) => {
+                        setForgotConfirm(event.target.value);
+                        if (forgotError) setForgotError("");
+                      }}
+                      placeholder="Repeat your password"
+                      autoComplete="new-password"
+                      required
+                    />
+                  </label>
+                  <button
+                    type="submit"
+                    className="btn btn-accent btn-block"
+                    disabled={forgotLoading}
+                  >
+                    {forgotLoading ? "Resetting..." : "Reset password"}
+                  </button>
+                </form>
+                <div className="login-links">
+                  <button
+                    type="button"
+                    className="login-link"
+                    onClick={handleForgotResend}
+                    disabled={forgotLoading}
+                  >
+                    Resend code
+                  </button>
+                  <button
+                    type="button"
+                    className="login-link"
+                    onClick={handleForgotCancel}
+                    disabled={forgotLoading}
+                  >
+                    Back to sign in
+                  </button>
+                </div>
+              </>
+            )}
+            {authStep === "verify-request" && (
+              <>
+                <form className="login-form" onSubmit={handleVerifyRequest}>
+                  <label className="login-field">
+                    <span>Email or username</span>
+                    <input
+                      type="text"
+                      value={verifyIdentifier}
+                      onChange={(event) => {
+                        setVerifyIdentifier(event.target.value);
+                        if (verifyError) setVerifyError("");
+                        if (verifyNotice) setVerifyNotice("");
+                      }}
+                      placeholder="name@hospital.org or dr_singh"
+                      autoComplete="email"
+                      required
+                    />
+                  </label>
+                  <button
+                    type="submit"
+                    className="btn btn-accent btn-block"
+                    disabled={verifyLoading}
+                  >
+                    {verifyLoading ? "Sending code..." : "Send code"}
+                  </button>
+                </form>
+                <div className="login-links">
+                  <button
+                    type="button"
+                    className="login-link"
+                    onClick={handleVerifyCancel}
+                    disabled={verifyLoading}
+                  >
+                    Back to sign in
+                  </button>
+                </div>
+              </>
+            )}
+            {authStep === "verify-confirm" && (
+              <>
+                <form className="login-form" onSubmit={handleVerifyConfirm}>
+                  <label className="login-field">
+                    <span>Email or username</span>
+                    <input
+                      type="text"
+                      value={verifyIdentifier}
+                      onChange={(event) => {
+                        setVerifyIdentifier(event.target.value);
+                        if (verifyError) setVerifyError("");
+                        if (verifyNotice) setVerifyNotice("");
+                      }}
+                      placeholder="name@hospital.org or dr_singh"
+                      autoComplete="email"
+                      required
+                    />
+                  </label>
+                  <label className="login-field">
+                    <span>Verification code</span>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      value={verifyOtp}
+                      onChange={(event) => {
+                        setVerifyOtp(event.target.value);
+                        if (verifyError) setVerifyError("");
+                      }}
+                      placeholder="6-digit code"
+                      autoComplete="one-time-code"
+                      required
+                    />
+                  </label>
+                  <button
+                    type="submit"
+                    className="btn btn-accent btn-block"
+                    disabled={verifyLoading}
+                  >
+                    {verifyLoading ? "Verifying..." : "Verify email"}
+                  </button>
+                </form>
+                <div className="login-links">
+                  <button
+                    type="button"
+                    className="login-link"
+                    onClick={handleVerifyResend}
+                    disabled={verifyLoading}
+                  >
+                    Resend code
+                  </button>
+                  <button
+                    type="button"
+                    className="login-link"
+                    onClick={handleVerifyCancel}
+                    disabled={verifyLoading}
+                  >
+                    Back to sign in
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (isWorkspace) {
     return (
       <div className="workspace workspace-blender">
@@ -1894,6 +3001,15 @@ export default function App() {
                 <span className="meta-chip">Path: {uploadPath}</span>
               )}
             </div>
+            {authUser && (
+              <div className="workspace-user">
+                <span className="role">{authRoleLabel}</span>
+                <span className="name">{authDisplayName}</span>
+                <button type="button" onClick={handleLogout}>
+                  Sign out
+                </button>
+              </div>
+            )}
             {enable3DViewer && (
               <div className="mode-toggle">
                 <button
@@ -2549,6 +3665,27 @@ export default function App() {
   return (
     <div className="app">
       <div className="ambient" aria-hidden="true" />
+      <div className="topbar">
+        <div className="topbar-brand">
+          <span>Corpus Medica</span>
+          <span className="topbar-tag">Medical AI workspace</span>
+        </div>
+        {authUser && (
+          <div className="topbar-actions">
+            <div className="auth-chip">
+              <span className="role">{authRoleLabel}</span>
+              <span className="name">{authDisplayName}</span>
+            </div>
+            <button
+              type="button"
+              className="btn btn-ghost btn-small"
+              onClick={handleLogout}
+            >
+              Sign out
+            </button>
+          </div>
+        )}
+      </div>
       <header className="hero">
         <div className="hero-copy">
           <span className="pill">Open source - modular - model agnostic</span>
