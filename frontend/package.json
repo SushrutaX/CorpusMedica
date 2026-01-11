@@ -10,13 +10,15 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "animejs": "^3.2.1",
+    "nifti-reader-js": "^0.8.0",
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
-    "vtk.js": "^34.16.2",
-    "nifti-reader-js": "^0.8.0"
+    "vtk.js": "^34.16.2"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",
+    "@types/animejs": "^3.1.13",
     "@types/node": "^24.10.1",
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
