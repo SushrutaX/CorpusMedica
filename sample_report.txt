@@ -1,0 +1,4 @@
+Hemoglobin: 11.2
+Glucose: 168
+HbA1c: 6.4
+Cholesterol: 230
