@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from app.core.auth import JWTAuthMiddleware
 from app.core.logging import setup_logging
 from app.api.routes.health import router as health_router
 from app.api.routes.files import router as files_router
@@ -17,6 +18,14 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+)
+app.add_middleware(
+    JWTAuthMiddleware,
+    exempt_paths=[
+        "/api/health",
+        "/docs",
+        "/openapi.json",
+    ],
 )
 
 app.include_router(health_router, prefix="/api")
