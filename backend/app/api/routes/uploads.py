@@ -283,6 +283,63 @@ def _load_volume_data(path: Path) -> Tuple[np.ndarray, List[float]]:
     raise ValueError("Unsupported upload format for preview.")
 
 
+def _normalize_iso_value(volume: np.ndarray, iso: float) -> float:
+    if 0 < iso < 1:
+        min_val = float(np.min(volume))
+        max_val = float(np.max(volume))
+        return min_val + (max_val - min_val) * iso
+    return iso
+
+
+def _mesh_from_volume(
+    volume: np.ndarray, zooms: List[float], iso: float, step: int
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    try:
+        from skimage import measure
+    except Exception as exc:
+        raise RuntimeError("Mesh generation dependency missing.") from exc
+
+    if step > 1:
+        volume = volume[::step, ::step, ::step]
+        zooms = [float(item) * step for item in zooms]
+
+    iso_level = _normalize_iso_value(volume, iso)
+    verts, faces, normals, _values = measure.marching_cubes(
+        volume, level=iso_level, spacing=zooms
+    )
+    return verts.astype(np.float32), faces.astype(np.int32), normals.astype(np.float32)
+
+
+def _mesh_to_ply(
+    vertices: np.ndarray, faces: np.ndarray, normals: np.ndarray
+) -> bytes:
+    vertex_count = vertices.shape[0]
+    face_count = faces.shape[0]
+    header = [
+        "ply",
+        "format ascii 1.0",
+        f"element vertex {vertex_count}",
+        "property float x",
+        "property float y",
+        "property float z",
+        "property float nx",
+        "property float ny",
+        "property float nz",
+        f"element face {face_count}",
+        "property list uchar int vertex_indices",
+        "end_header",
+    ]
+    lines = header[:]
+    for idx in range(vertex_count):
+        vx, vy, vz = vertices[idx]
+        nx, ny, nz = normals[idx]
+        lines.append(f"{vx:.6f} {vy:.6f} {vz:.6f} {nx:.6f} {ny:.6f} {nz:.6f}")
+    for face in faces:
+        a, b, c = face
+        lines.append(f"3 {int(a)} {int(b)} {int(c)}")
+    return "\n".join(lines).encode("utf-8")
+
+
 def _slice_from_nifti(
     path: Path, axis_index: int, index: int, channel: int
 ) -> np.ndarray:
@@ -698,6 +755,49 @@ def volume_file(
         return FileResponse(str(nifti_path), filename=nifti_path.name)
 
     raise HTTPException(status_code=400, detail="Unsupported upload format.")
+
+
+@router.get("/uploads/mesh")
+def volume_mesh(
+    path: str = Query(..., description="Uploaded path to render."),
+    channel: int = Query(0, ge=0),
+    iso: float = Query(0.35, description="Iso-surface threshold."),
+    step: int = Query(2, ge=1, le=6, description="Downsample step for mesh."),
+    label: Optional[int] = Query(
+        None, description="Optional label value to extract."
+    ),
+):
+    resolved = _resolve_upload_path(path)
+    try:
+        volume, zooms = _load_volume_data(resolved)
+    except (ValueError, FileNotFoundError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    if volume.ndim == 4:
+        if channel >= volume.shape[3]:
+            raise HTTPException(
+                status_code=400, detail="Channel index out of range."
+            )
+        volume = volume[..., channel]
+
+    if label is not None:
+        volume = (volume == label).astype(np.float32)
+        iso = 0.5
+
+    try:
+        vertices, faces, normals = _mesh_from_volume(volume, zooms, iso, step)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail="Mesh generation failed.")
+
+    ply_data = _mesh_to_ply(vertices, faces, normals)
+    filename = f"{resolved.stem}_mesh.ply"
+    return Response(
+        content=ply_data,
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/uploads/slice")
