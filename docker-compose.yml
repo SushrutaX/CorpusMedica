@@ -9,25 +9,17 @@ services:
       - MODELS_DIR=/models
       - OUTPUTS_DIR=/data/outputs
       - TEMP_DIR=/data/tmp
-      - OLLAMA_BASE_URL=http://ollama:11434
       - AUTH_ENABLED=${AUTH_ENABLED:-false}
       - AUTH_JWT_SECRET=${AUTH_JWT_SECRET:-change-me}
+      # Chatbot environment variables
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - QDRANT_PATH=/data/qdrant
     volumes:
       - ./backend:/app
       - ./chroma_db:/app/chroma_db
       - ./models:/models
       - medai_data:/data
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
-    depends_on:
-      - ollama
-
-  ollama:
-    image: ollama/ollama:latest
-    container_name: medai-ollama
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama_models:/root/.ollama
 
   auth:
     build: ./auth_service
@@ -77,5 +69,4 @@ services:
 
 volumes:
   medai_data:
-  ollama_models:
   auth_db:
