@@ -1,0 +1,5 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ChangeEvent, PointerEvent as ReactPointerEvent } from "react";
+import ChatPanel from './components/ChatPanel';
+
+// ... rest of your types stay the same ...

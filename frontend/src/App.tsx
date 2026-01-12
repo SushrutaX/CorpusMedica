@@ -5,6 +5,7 @@ import type {
   PointerEvent as ReactPointerEvent,
 } from "react";
 import anime from "animejs";
+import ChatPanel from './components/ChatPanel';
 
 type Model = {
   id: string;
@@ -216,6 +217,9 @@ const AUTH_REQUIRED =
 const AUTH_TOKEN_KEY = "medai_auth_token";
 const AUTH_REFRESH_KEY = "medai_auth_refresh";
 
+const buildDownloadUrl = (path: string) =>
+  `${API_BASE}/api/download?path=${encodeURIComponent(path)}`;
+
 const SKELETONS = Array.from({ length: 3 }, (_, index) => index);
 const enable3DViewer =
   ((import.meta.env.VITE_ENABLE_3D_VIEWER as string) ?? "true") === "true";
@@ -357,6 +361,7 @@ export default function App() {
   const [historyLoading, setHistoryLoading] = useState<boolean>(false);
   const [historyError, setHistoryError] = useState<string>("");
   const [notices, setNotices] = useState<Notice[]>([]);
+  const [chatPanelOpen, setChatPanelOpen] = useState<boolean>(false);
   const [workspacePath, setWorkspacePath] = useState<string>(() => {
     const params = new URLSearchParams(window.location.search);
     return params.get("path") ?? "";
@@ -4474,6 +4479,49 @@ export default function App() {
           </div>
         ))}
       </div>
+
+      {/* Floating Chat Button */}
+      <button
+        onClick={() => setChatPanelOpen(true)}
+        style={{
+          position: 'fixed',
+          bottom: '32px',
+          right: '32px',
+          width: '60px',
+          height: '60px',
+          borderRadius: '50%',
+          border: 'none',
+          background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+          color: 'white',
+          cursor: 'pointer',
+          boxShadow: '0 4px 20px rgba(102, 126, 234, 0.5)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          transition: 'all 0.3s',
+          zIndex: 999,
+        }}
+        onMouseEnter={(e) => {
+          e.currentTarget.style.transform = 'scale(1.1)';
+          e.currentTarget.style.boxShadow = '0 6px 30px rgba(102, 126, 234, 0.6)';
+        }}
+        onMouseLeave={(e) => {
+          e.currentTarget.style.transform = 'scale(1)';
+          e.currentTarget.style.boxShadow = '0 4px 20px rgba(102, 126, 234, 0.5)';
+        }}
+        title="Ask AI Assistant"
+      >
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" strokeLinecap="round" strokeLinejoin="round"/>
+        </svg>
+      </button>
+
+      {/* Chat Panel */}
+      <ChatPanel
+        isOpen={chatPanelOpen}
+        onClose={() => setChatPanelOpen(false)}
+        apiBase={API_BASE}
+      />
     </div>
   );
 }

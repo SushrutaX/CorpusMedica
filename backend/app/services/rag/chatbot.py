@@ -1,0 +1,463 @@
+"""
+RAG Chatbot for Corpus Medica Platform
+
+This module implements a Retrieval-Augmented Generation (RAG) chatbot that can
+answer questions about the codebase, MONAI bundles, and medical imaging workflows.
+"""
+
+import os
+import logging
+from pathlib import Path
+from typing import List, Dict, Any, Optional
+import google.generativeai as genai
+from qdrant_client import QdrantClient
+from qdrant_client.models import Distance, VectorParams, PointStruct
+from sentence_transformers import SentenceTransformer
+
+logger = logging.getLogger(__name__)
+
+
+class RAGChatbot:
+    """RAG-based chatbot for Corpus Medica documentation and code."""
+    
+    def __init__(
+        self,
+        base_path: Optional[Path] = None,
+        models_path: Optional[Path] = None,
+        embedding_model: str = "all-MiniLM-L6-v2",
+        collection_name: str = "corpus_medica_docs"
+    ):
+        """
+        Initialize RAG chatbot.
+        
+        Args:
+            base_path: Path to project root
+            models_path: Path to models directory
+            embedding_model: Name of sentence-transformers model
+            collection_name: Name of Qdrant collection
+        """
+        # Setup paths
+        if base_path is None:
+            base_path = Path(__file__).parent.parent.parent.parent.parent
+        if models_path is None:
+            models_path = base_path / "models"
+            
+        self.base_path = Path(base_path)
+        self.models_path = Path(models_path)
+        self.collection_name = collection_name
+        
+        # Initialize Gemini - try multiple model names
+        api_key = os.getenv("GEMINI_API_KEY")
+        if not api_key:
+            raise ValueError("GEMINI_API_KEY environment variable not set")
+        
+        genai.configure(api_key=api_key)
+        
+        # Try different model names in order of preference
+        model_names = [
+            'gemini-2.5-flash',
+            'models/gemini-2.5-flash',
+            'gemini-1.5-pro-latest',
+            'gemini-1.5-flash-latest',
+            'gemini-pro',
+            'models/gemini-1.5-pro-latest',
+            'models/gemini-1.5-flash-latest',
+            'models/gemini-pro'
+        ]
+        
+        self.model = None
+        for model_name in model_names:
+            try:
+                self.model = genai.GenerativeModel(model_name)
+                logger.info(f"Successfully initialized Gemini model: {model_name}")
+                break
+            except Exception as e:
+                logger.debug(f"Could not use model {model_name}: {e}")
+                continue
+        
+        if self.model is None:
+            raise ValueError("Could not initialize any Gemini model. Please check your API key and available models.")
+        
+        # Initialize embedding model
+        logger.info(f"Loading embedding model: {embedding_model}")
+        self.embedding_model = SentenceTransformer(embedding_model)
+        self.embedding_dim = self.embedding_model.get_sentence_embedding_dimension()
+        
+        # Initialize Qdrant
+        qdrant_path = os.getenv("QDRANT_PATH", str(self.base_path / "backend" / "qdrant_storage"))
+        logger.info(f"Initializing Qdrant at: {qdrant_path}")
+        self.client = QdrantClient(path=qdrant_path)
+        
+        # Create collection if needed
+        self._ensure_collection()
+        
+        logger.info("RAG Chatbot initialized successfully")
+    
+    def _ensure_collection(self):
+        """Ensure the Qdrant collection exists."""
+        try:
+            collections = self.client.get_collections().collections
+            collection_names = [c.name for c in collections]
+            
+            if self.collection_name not in collection_names:
+                logger.info(f"Creating collection: {self.collection_name}")
+                self.client.create_collection(
+                    collection_name=self.collection_name,
+                    vectors_config=VectorParams(
+                        size=self.embedding_dim,
+                        distance=Distance.COSINE
+                    )
+                )
+        except Exception as e:
+            logger.error(f"Error ensuring collection: {e}")
+            raise
+    
+    def _get_chroma_db_paths(self) -> List[Path]:
+        # Find chroma_db sources to index.
+        candidates = [
+            self.base_path / "backend" / "chroma_db",
+            self.base_path / "chroma_db",
+        ]
+        paths = []
+        seen = set()
+        for candidate in candidates:
+            try:
+                resolved = candidate.resolve()
+            except Exception:
+                resolved = candidate
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            if candidate.exists():
+                paths.append(candidate)
+        return paths
+
+    def _is_indexed(self) -> bool:
+        # Check whether the vector DB already has indexed documents.
+        try:
+            return self.client.count(self.collection_name).count > 0
+        except Exception as exc:
+            logger.warning("Could not check index status: %s", exc)
+            return False
+
+
+    def index_knowledge_base(self, force_reindex: bool = False):
+        """
+        Index the knowledge base with documents.
+        
+        Args:
+            force_reindex: If True, clear existing index first
+        """
+        from .document_processor import DocumentProcessor
+        
+        logger.info("Starting knowledge base indexing...")
+        logger.info(f"Base path: {self.base_path}")
+        logger.info(f"Models path: {self.models_path}")
+        
+        # Clear collection if force reindex
+        if force_reindex:
+            logger.info("Force reindex: deleting existing collection")
+            try:
+                self.client.delete_collection(self.collection_name)
+                self._ensure_collection()
+            except Exception as e:
+                logger.warning(f"Could not delete collection: {e}")
+        
+        # Check if already indexed
+        try:
+            count = self.client.count(self.collection_name).count
+            if count > 0 and not force_reindex:
+                logger.info(f"Knowledge base already indexed ({count} documents)")
+                return
+        except Exception:
+            pass
+        
+        # Process documents
+        processor = DocumentProcessor()
+        documents = []
+
+        chroma_paths = self._get_chroma_db_paths()
+        if chroma_paths:
+            logger.info("Processing chroma_db sources...")
+            for chroma_path in chroma_paths:
+                docs = processor.process_directory(chroma_path, doc_type="chroma_db", recursive=True)
+                documents.extend(docs)
+                logger.info(f"  Processed {len(docs)} documents from {chroma_path}")
+        else:
+            logger.info("No chroma_db directory found")
+
+        # 1. PRIORITY: Process BRATS_README.md
+        logger.info("Processing BRATS_README.md...")
+        brats_readme = self.base_path / "BRATS_README.md"
+        if brats_readme.exists():
+            doc = processor.process_file(brats_readme, doc_type="documentation", base_path=self.base_path)
+            if doc:
+                documents.append(doc)
+                logger.info(f"  ✅ Found BRATS_README.md ({len(doc.content)} chars)")
+        else:
+            logger.warning(f"  ❌ BRATS_README.md not found at {brats_readme}")
+        
+        # 2. PRIORITY: Process download_monai_bundles.py
+        logger.info("Processing backend/scripts/download_monai_bundles.py...")
+        download_script = self.base_path / "backend" / "scripts" / "download_monai_bundles.py"
+        if download_script.exists():
+            doc = processor.process_file(download_script, doc_type="python_script", base_path=self.base_path)
+            if doc:
+                documents.append(doc)
+                logger.info(f"  ✅ Found download_monai_bundles.py ({len(doc.content)} chars)")
+        else:
+            logger.warning(f"  ❌ download_monai_bundles.py not found at {download_script}")
+        
+        # 3. PRIORITY: Process ALL files in models/bundles
+        logger.info("Processing MONAI bundles in models/bundles/...")
+        bundles_path = self.models_path / "bundles"
+        if bundles_path.exists():
+            logger.info(f"  Bundles path exists: {bundles_path}")
+            bundle_dirs = [d for d in bundles_path.iterdir() if d.is_dir() and not d.name.endswith('.zip')]
+            logger.info(f"  Found {len(bundle_dirs)} bundle directories")
+            
+            for bundle_dir in bundle_dirs:
+                logger.info(f"\n  Processing bundle: {bundle_dir.name}")
+                
+                # Process all files in this bundle
+                all_files = list(bundle_dir.rglob('*'))
+                file_count = len([f for f in all_files if f.is_file()])
+                logger.info(f"    Total files in bundle: {file_count}")
+                
+                bundle_docs = processor.process_directory(bundle_dir, doc_type="monai_bundle", recursive=True)
+                documents.extend(bundle_docs)
+                logger.info(f"    ✅ Processed {len(bundle_docs)} documents from {bundle_dir.name}")
+                
+                # List what was processed
+                for doc in bundle_docs[:3]:  # Show first 3
+                    logger.info(f"      - {doc.metadata.get('source', 'Unknown')}")
+                if len(bundle_docs) > 3:
+                    logger.info(f"      ... and {len(bundle_docs) - 3} more")
+        else:
+            logger.warning(f"  ❌ Bundles path not found: {bundles_path}")
+        
+        # 4. Process backend code (lower priority)
+        logger.info("\nProcessing backend code...")
+        backend_path = self.base_path / "backend"
+        if backend_path.exists():
+            docs = processor.process_directory(backend_path, doc_type="python_code")
+            documents.extend(docs)
+            logger.info(f"  Found {len(docs)} backend documents")
+        
+        # 5. Process frontend code (lower priority)
+        logger.info("Processing frontend code...")
+        frontend_path = self.base_path / "frontend" / "src"
+        if frontend_path.exists():
+            docs = processor.process_directory(frontend_path, doc_type="typescript_code")
+            documents.extend(docs)
+            logger.info(f"  Found {len(docs)} frontend documents")
+        
+        logger.info(f"\n{'='*60}")
+        logger.info(f"Total documents to index: {len(documents)}")
+        logger.info(f"{'='*60}\n")
+        
+        # Generate embeddings and upload
+        if documents:
+            logger.info("Generating embeddings...")
+            points = []
+            
+            for idx, doc in enumerate(documents):
+                if idx % 10 == 0:
+                    logger.info(f"  Progress: {idx}/{len(documents)}")
+                
+                # Generate embedding
+                embedding = self.embedding_model.encode(doc.content).tolist()
+                
+                # Create point
+                point = PointStruct(
+                    id=idx,
+                    vector=embedding,
+                    payload={
+                        "content": doc.content,
+                        "metadata": doc.metadata
+                    }
+                )
+                points.append(point)
+            
+            # Upload to Qdrant
+            logger.info(f"Uploading {len(points)} points to Qdrant...")
+            self.client.upsert(
+                collection_name=self.collection_name,
+                points=points
+            )
+            
+            logger.info("✅ Knowledge base indexing complete!")
+            
+            # Verify what was indexed
+            logger.info("\n" + "="*60)
+            logger.info("Verification: Checking indexed documents")
+            logger.info("="*60)
+            
+            count = self.client.count(self.collection_name).count
+            logger.info(f"Total documents in vector DB: {count}")
+            
+            # Test search for specific files
+            test_queries = [
+                ("BRATS README", "BRATS_README"),
+                ("download MONAI bundles", "download_monai_bundles"),
+                ("bundle configuration", "bundles")
+            ]
+            
+            for query, expected in test_queries:
+                results = self.retrieve_context(query, top_k=3)
+                if results:
+                    logger.info(f"\n✅ Search for '{query}':")
+                    for r in results[:2]:
+                        source = r['metadata'].get('source', 'Unknown')
+                        logger.info(f"   - {source} (score: {r['score']:.3f})")
+                else:
+                    logger.warning(f"\n⚠️  No results for '{query}'")
+            
+        else:
+            logger.warning("No documents found to index")
+    
+    def retrieve_context(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
+        """
+        Retrieve relevant context for a query.
+        
+        Args:
+            query: User query
+            top_k: Number of results to return
+            
+        Returns:
+            List of relevant documents with metadata
+        """
+        # Generate query embedding
+        query_embedding = self.embedding_model.encode(query).tolist()
+        
+        # Search Qdrant
+        results = self.client.search(
+            collection_name=self.collection_name,
+            query_vector=query_embedding,
+            limit=top_k
+        )
+        
+        # Format results
+        documents = []
+        for result in results:
+            documents.append({
+                "content": result.payload["content"],
+                "metadata": result.payload["metadata"],
+                "score": result.score
+            })
+        
+        return documents
+    
+    def chat(
+        self,
+        query: str,
+        chat_history: Optional[List[Dict[str, str]]] = None,
+        top_k: int = 5
+    ) -> Dict[str, Any]:
+        """
+        Chat with the assistant.
+        
+        Args:
+            query: User query
+            chat_history: Previous chat messages
+            top_k: Number of context documents to retrieve
+            
+        Returns:
+            Response dict with answer and sources
+        """
+        if chat_history is None:
+            chat_history = []
+        
+        if not self._is_indexed():
+            logger.info("Knowledge base not indexed; indexing now")
+            self.index_knowledge_base()
+
+        # Retrieve relevant context
+        context_docs = self.retrieve_context(query, top_k=top_k)
+        
+        # Build context string
+        context_parts = []
+        for idx, doc in enumerate(context_docs, 1):
+            source = doc['metadata'].get('source', 'Unknown')
+            doc_type = doc['metadata'].get('type', 'document')
+            context_parts.append(
+                f"[Source {idx}: {doc_type} - {source}]\n{doc['content']}\n"
+            )
+        
+        context_str = "\n---\n".join(context_parts)
+        
+        # Build prompt
+        system_prompt = """You are an AI assistant for the Corpus Medica medical imaging platform. 
+You help users understand the codebase, MONAI bundles, and medical imaging workflows.
+
+When answering questions:
+1. Use the provided context documents to give accurate, specific answers
+2. Reference specific files, functions, or configurations when relevant
+3. Explain technical concepts clearly
+4. If you're not sure, say so
+5. Format code snippets with proper markdown
+
+Context documents:
+---
+{context}
+---
+
+Chat history:
+{history}
+
+User question: {query}
+
+Provide a helpful, accurate answer based on the context above."""
+        
+        # Format history
+        history_str = ""
+        for msg in chat_history[-6:]:  # Last 3 exchanges
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            history_str += f"{role}: {content}\n"
+        
+        prompt = system_prompt.format(
+            context=context_str,
+            history=history_str,
+            query=query
+        )
+        
+        # Generate response
+        try:
+            response = self.model.generate_content(prompt)
+            answer = response.text
+        except Exception as e:
+            logger.error(f"Error generating response: {e}")
+            answer = f"Sorry, I encountered an error: {str(e)}"
+        
+        # Format sources
+        sources = []
+        for doc in context_docs:
+            sources.append({
+                "source": doc['metadata'].get('source', 'Unknown'),
+                "type": doc['metadata'].get('type', 'document'),
+                "score": float(doc['score'])
+            })
+        
+        return {
+            "response": answer,
+            "sources": sources
+        }
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """Get chatbot statistics."""
+        try:
+            count = self.client.count(self.collection_name).count
+            return {
+                "indexed": count > 0,
+                "documents_count": count,
+                "collection_name": self.collection_name,
+                "status": "ready" if count > 0 else "not_indexed"
+            }
+        except Exception as e:
+            return {
+                "indexed": False,
+                "documents_count": 0,
+                "collection_name": self.collection_name,
+                "status": f"error: {str(e)}"
+            }
