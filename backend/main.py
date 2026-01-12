@@ -8,6 +8,7 @@ from app.api.routes.models import router as models_router
 from app.api.routes.segment import router as segment_router
 from app.api.routes.uploads import router as uploads_router
 from app.api.routes.chatbot import router as chatbot_router
+from app.api.routes.reports import router as reports_router
 
 setup_logging()
 
@@ -38,3 +39,4 @@ app.include_router(models_router, prefix="/api")
 app.include_router(segment_router, prefix="/api")
 app.include_router(uploads_router, prefix="/api")
 app.include_router(chatbot_router, prefix="/api")
+app.include_router(reports_router, prefix="/api")
