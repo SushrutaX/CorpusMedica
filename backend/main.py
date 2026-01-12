@@ -20,12 +20,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+import os
+
 app.add_middleware(
     JWTAuthMiddleware,
     exempt_paths=[
         "/api/health",
         "/docs",
         "/openapi.json",
+        # allow unauthenticated analyze for local/dev testing when enabled
+        *( ["/api/reports/analyze"] if os.getenv("AUTH_ALLOW_UNAUTH_REPORTS", "true").lower() == "true" else [] ),
     ],
 )
 
