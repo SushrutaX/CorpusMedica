@@ -58,6 +58,18 @@ type ResultsResponse = {
   error_message?: string | null;
 };
 
+type ReportAnalysisResponse = {
+  extracted_values: Record<string, number | string>;
+  risk_analysis: {
+    risk_level: string;
+    abnormalities: Record<string, string>;
+    explanations: string[];
+    possible_symptoms: string[];
+    disclaimer?: string;
+  };
+  llm_explanation: string;
+};
+
 type AuthTokens = {
   access: string;
   refresh: string;
@@ -129,6 +141,26 @@ type AxisKey = "sagittal" | "coronal" | "axial";
 type SliceIndex = Record<AxisKey, number>;
 
 type ViewerMode = "2d" | "3d";
+type Viewer3DMode = "volume" | "mesh";
+type MeshTool = "orbit" | "sculpt" | "carve";
+
+type MeshBounds = {
+  min: [number, number, number];
+  max: [number, number, number];
+};
+
+type MeshViewerState = {
+  three: any;
+  renderer: any;
+  scene: any;
+  camera: any;
+  controls: any;
+  mesh: any;
+  geometry: any;
+  material: any;
+  clipPlane: any | null;
+  bounds: MeshBounds;
+};
 type SliceColorMap = "grayscale" | "bone" | "hot" | "cool" | "viridis";
 type VolumeColorMap =
   | "radiance"
@@ -223,6 +255,7 @@ const buildDownloadUrl = (path: string) =>
 const SKELETONS = Array.from({ length: 3 }, (_, index) => index);
 const enable3DViewer =
   ((import.meta.env.VITE_ENABLE_3D_VIEWER as string) ?? "true") === "true";
+const MAX_MESH_SCULPT_VERTICES = 200000;
 const enableViewerWorkspace =
   ((import.meta.env.VITE_ENABLE_VIEWER_WORKSPACE as string) ?? "true") ===
   "true";
@@ -342,6 +375,21 @@ export default function App() {
   const [clipEnabled, setClipEnabled] = useState<boolean>(false);
   const [clipAxis, setClipAxis] = useState<ClipAxis>("z");
   const [clipValue, setClipValue] = useState<number>(0.55);
+  const [viewer3dMode, setViewer3dMode] = useState<Viewer3DMode>("volume");
+  const [meshTool, setMeshTool] = useState<MeshTool>("orbit");
+  const [meshBrushSize, setMeshBrushSize] = useState<number>(12);
+  const [meshStrength, setMeshStrength] = useState<number>(0.6);
+  const [meshIso, setMeshIso] = useState<number>(0.35);
+  const [meshStep, setMeshStep] = useState<number>(2);
+  const [meshWireframe, setMeshWireframe] = useState<boolean>(false);
+  const [meshClipEnabled, setMeshClipEnabled] = useState<boolean>(false);
+  const [meshClipAxis, setMeshClipAxis] = useState<ClipAxis>("x");
+  const [meshClipValue, setMeshClipValue] = useState<number>(0.5);
+  const [meshLoading, setMeshLoading] = useState<boolean>(false);
+  const [meshError, setMeshError] = useState<string>("");
+  const [meshVertexCount, setMeshVertexCount] = useState<number>(0);
+  const [meshCanSculpt, setMeshCanSculpt] = useState<boolean>(true);
+  const [meshRevision, setMeshRevision] = useState<number>(0);
   const [sliceIndex, setSliceIndex] = useState<SliceIndex>({
     sagittal: 0,
     coronal: 0,
@@ -356,6 +404,15 @@ export default function App() {
   const [jobId, setJobId] = useState<string>("");
   const [jobStatus, setJobStatus] = useState<JobStatus | null>(null);
   const [jobResult, setJobResult] = useState<ResultsResponse | null>(null);
+  const [reportFile, setReportFile] = useState<File | null>(null);
+  const [reportResult, setReportResult] =
+    useState<ReportAnalysisResponse | null>(null);
+  const [reportLoading, setReportLoading] = useState<boolean>(false);
+  const [reportError, setReportError] = useState<string>("");
+  const [reportNotice, setReportNotice] = useState<string>("");
+  const [reportValueQuery, setReportValueQuery] = useState<string>("");
+  const [reportOnlyAbnormal, setReportOnlyAbnormal] =
+    useState<boolean>(false);
   const [error, setError] = useState<string>("");
   const [jobHistory, setJobHistory] = useState<JobHistoryItem[]>([]);
   const [historyLoading, setHistoryLoading] = useState<boolean>(false);
@@ -399,6 +456,17 @@ export default function App() {
   const viewerCleanupRef = useRef<(() => void) | null>(null);
   const viewer3dStateRef = useRef<Viewer3DState | null>(null);
   const vtkPlaneRef = useRef<any | null>(null);
+  const meshViewerRef = useRef<HTMLDivElement | null>(null);
+  const meshCleanupRef = useRef<(() => void) | null>(null);
+  const meshStateRef = useRef<MeshViewerState | null>(null);
+  const meshSculptingRef = useRef<boolean>(false);
+  const meshPendingRef = useRef<{ point: [number, number, number]; direction: number } | null>(
+    null
+  );
+  const meshRafRef = useRef<number>(0);
+  const meshBrushRef = useRef<number>(meshBrushSize);
+  const meshStrengthRef = useRef<number>(meshStrength);
+  const meshToolRef = useRef<MeshTool>(meshTool);
   const annotationsRef = useRef<Record<string, AnnotationSet>>({});
   const drawingRef = useRef<DrawingState | null>(null);
   const canvasRefs = useRef<Record<AxisKey, HTMLCanvasElement | null>>({
@@ -435,6 +503,25 @@ export default function App() {
     const params = new URLSearchParams(window.location.search);
     return enableViewerWorkspace && params.get("workspace") === "viewer";
   }, [enableViewerWorkspace]);
+
+  useEffect(() => {
+    meshBrushRef.current = meshBrushSize;
+  }, [meshBrushSize]);
+
+  useEffect(() => {
+    meshStrengthRef.current = meshStrength;
+  }, [meshStrength]);
+
+  useEffect(() => {
+    meshToolRef.current = meshTool;
+  }, [meshTool]);
+
+  useEffect(() => {
+    if (isWorkspace) return;
+    if (viewer3dMode !== "volume") {
+      setViewer3dMode("volume");
+    }
+  }, [isWorkspace, viewer3dMode]);
 
   useEffect(() => {
     if (!isWorkspace) return undefined;
@@ -495,6 +582,41 @@ export default function App() {
     [models]
   );
   const recentJobs = useMemo(() => jobHistory.slice(0, 6), [jobHistory]);
+  const reportValues = useMemo(
+    () => Object.entries(reportResult?.extracted_values ?? {}),
+    [reportResult]
+  );
+  const reportAbnormalities = useMemo(
+    () => Object.entries(reportResult?.risk_analysis?.abnormalities ?? {}),
+    [reportResult]
+  );
+  const reportAbnormalityMap = useMemo(
+    () => new Map(reportAbnormalities),
+    [reportAbnormalities]
+  );
+  const reportFilteredValues = useMemo(() => {
+    const query = reportValueQuery.trim().toLowerCase();
+    return reportValues.filter(([key]) => {
+      if (reportOnlyAbnormal && !reportAbnormalityMap.has(key)) {
+        return false;
+      }
+      if (!query) {
+        return true;
+      }
+      return key.toLowerCase().includes(query);
+    });
+  }, [reportValues, reportValueQuery, reportOnlyAbnormal, reportAbnormalityMap]);
+  const reportStats = useMemo(() => {
+    const valueCount = reportValues.length;
+    const abnormalCount = reportAbnormalities.length;
+    const symptomCount =
+      reportResult?.risk_analysis?.possible_symptoms?.length ?? 0;
+    return { valueCount, abnormalCount, symptomCount };
+  }, [reportValues, reportAbnormalities, reportResult]);
+  const reportRiskLevel = reportResult?.risk_analysis?.risk_level ?? "";
+  const reportRiskClass = reportRiskLevel
+    ? `report-risk-${reportRiskLevel}`
+    : "";
   const uploadPath = workspacePath || uploadResult?.saved_path || "";
   const isAuthenticated = Boolean(authToken && authUser);
   const authDisplayName = authUser?.email || authUser?.username || "User";
@@ -506,6 +628,15 @@ export default function App() {
     authStep === "forgot-request" || authStep === "forgot-verify";
   const isVerifyFlow =
     authStep === "verify-request" || authStep === "verify-confirm";
+  const meshHint = useMemo(() => {
+    if (meshTool === "orbit") {
+      return "Orbit tool: drag to rotate, scroll to zoom, right-click to pan.";
+    }
+    if (meshTool === "sculpt") {
+      return "Sculpt tool: drag to add volume. Switch to Orbit to navigate.";
+    }
+    return "Carve tool: drag to remove volume. Switch to Orbit to navigate.";
+  }, [meshTool]);
 
   useEffect(() => {
     if (!showLogin) return undefined;
@@ -734,9 +865,30 @@ export default function App() {
     return `${API_BASE}/api/uploads/volume-file?${params.toString()}`;
   }, [uploadPath, viewerChannel, authToken]);
 
+  const buildMeshUrl = useCallback(() => {
+    if (!uploadPath) return "";
+    const params = new URLSearchParams({
+      path: uploadPath,
+      channel: String(viewerChannel),
+      iso: String(meshIso),
+      step: String(meshStep),
+      rev: String(meshRevision),
+      t: String(Date.now()),
+    });
+    if (authToken) {
+      params.set("token", authToken);
+    }
+    return `${API_BASE}/api/uploads/mesh?${params.toString()}`;
+  }, [uploadPath, viewerChannel, meshIso, meshStep, meshRevision, authToken]);
+
+  const requestMeshRebuild = useCallback(() => {
+    if (!uploadPath) return;
+    setMeshRevision((value) => value + 1);
+  }, [uploadPath]);
+
   useEffect(() => {
     if (AUTH_REQUIRED && !isAuthenticated) return;
-    if (!enable3DViewer || viewerMode !== "3d") {
+    if (!enable3DViewer || viewerMode !== "3d" || viewer3dMode !== "volume") {
       if (viewerCleanupRef.current) {
         viewerCleanupRef.current();
         viewerCleanupRef.current = null;
@@ -1069,12 +1221,374 @@ export default function App() {
     };
   }, [
     viewerMode,
+    viewer3dMode,
     uploadPath,
     viewerChannel,
     buildVolumeFileUrl,
     apiFetch,
     isAuthenticated,
   ]);
+
+  useEffect(() => {
+    if (viewerMode !== "3d" || viewer3dMode !== "mesh") return;
+    if (!uploadPath) return;
+    setMeshError("");
+    setMeshRevision((value) => value + 1);
+  }, [viewerMode, viewer3dMode, uploadPath]);
+
+  useEffect(() => {
+    if (AUTH_REQUIRED && !isAuthenticated) return;
+    if (!enable3DViewer || viewerMode !== "3d" || viewer3dMode !== "mesh") {
+      if (meshCleanupRef.current) {
+        meshCleanupRef.current();
+        meshCleanupRef.current = null;
+      }
+      setMeshLoading(false);
+      setMeshError("");
+      return;
+    }
+    if (!uploadPath || !meshViewerRef.current) {
+      if (meshCleanupRef.current) {
+        meshCleanupRef.current();
+        meshCleanupRef.current = null;
+      }
+      setMeshLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setMeshError("");
+    setMeshLoading(true);
+
+    const container = meshViewerRef.current;
+    container.replaceChildren();
+
+    const initMeshViewer = async () => {
+      try {
+        const THREE = await import("three");
+        const controlsModule = await import(
+          "three/examples/jsm/controls/OrbitControls"
+        );
+        const loaderModule = await import(
+          "three/examples/jsm/loaders/PLYLoader"
+        );
+
+        if (cancelled) return;
+
+        const { OrbitControls } = controlsModule as {
+          OrbitControls: new (...args: any[]) => any;
+        };
+        const { PLYLoader } = loaderModule as {
+          PLYLoader: new () => {
+            parse: (data: ArrayBuffer) => any;
+          };
+        };
+
+        const renderer = new THREE.WebGLRenderer({
+          antialias: true,
+          alpha: true,
+        });
+        renderer.setPixelRatio(window.devicePixelRatio || 1);
+        renderer.setClearColor(0x0b0b0b, 1);
+        renderer.localClippingEnabled = true;
+        container.appendChild(renderer.domElement);
+
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x0b0b0b);
+
+        const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 2000);
+        camera.position.set(0, 0, 8);
+
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.08;
+        controls.enabled = meshToolRef.current === "orbit";
+
+        const ambient = new THREE.AmbientLight(0xffffff, 0.45);
+        const keyLight = new THREE.DirectionalLight(0xffffff, 0.9);
+        keyLight.position.set(4, 6, 8);
+        const fillLight = new THREE.DirectionalLight(0x7dd3fc, 0.4);
+        fillLight.position.set(-6, -2, 4);
+        scene.add(ambient, keyLight, fillLight);
+
+        const response = await apiFetch(buildMeshUrl());
+        if (!response.ok) {
+          throw new Error(`Mesh download failed (${response.status})`);
+        }
+        const buffer = await response.arrayBuffer();
+        const loader = new PLYLoader();
+        const geometry = loader.parse(buffer);
+        geometry.computeVertexNormals();
+        geometry.center();
+        geometry.computeBoundingBox();
+
+        const material = new THREE.MeshStandardMaterial({
+          color: new THREE.Color(0x7dd3fc),
+          roughness: 0.35,
+          metalness: 0.05,
+          side: THREE.DoubleSide,
+        });
+
+        const mesh = new THREE.Mesh(geometry, material);
+        scene.add(mesh);
+
+        const bounds = geometry.boundingBox
+          ? geometry.boundingBox.clone()
+          : new THREE.Box3().setFromObject(mesh);
+        const size = new THREE.Vector3();
+        bounds.getSize(size);
+        const maxDim = Math.max(size.x, size.y, size.z) || 1;
+        camera.position.set(0, 0, maxDim * 1.6);
+        camera.near = Math.max(0.1, maxDim * 0.02);
+        camera.far = Math.max(200, maxDim * 6);
+        camera.updateProjectionMatrix();
+        controls.update();
+
+        const vertexCount = geometry.attributes.position.count;
+        setMeshVertexCount(vertexCount);
+        const canSculpt = vertexCount <= MAX_MESH_SCULPT_VERTICES;
+        setMeshCanSculpt(canSculpt);
+
+        const boundsPayload: MeshBounds = {
+          min: [bounds.min.x, bounds.min.y, bounds.min.z],
+          max: [bounds.max.x, bounds.max.y, bounds.max.z],
+        };
+
+        meshStateRef.current = {
+          three: THREE,
+          renderer,
+          scene,
+          camera,
+          controls,
+          mesh,
+          geometry,
+          material,
+          clipPlane: null,
+          bounds: boundsPayload,
+        };
+
+        const raycaster = new THREE.Raycaster();
+        const pointer = new THREE.Vector2();
+
+        const applySculpt = (
+          point: [number, number, number],
+          direction: number
+        ) => {
+          const positions = geometry.attributes.position;
+          const normals = geometry.attributes.normal;
+          const posArray = positions.array as Float32Array;
+          const normArray = normals.array as Float32Array;
+          const radius = Math.max(0.1, meshBrushRef.current);
+          const strength = meshStrengthRef.current;
+          const radiusSq = radius * radius;
+          const px = point[0];
+          const py = point[1];
+          const pz = point[2];
+          let changed = false;
+
+          for (let i = 0; i < posArray.length; i += 3) {
+            const dx = posArray[i] - px;
+            const dy = posArray[i + 1] - py;
+            const dz = posArray[i + 2] - pz;
+            const distSq = dx * dx + dy * dy + dz * dz;
+            if (distSq > radiusSq) continue;
+            const falloff = 1 - Math.sqrt(distSq) / radius;
+            const displacement = strength * falloff * direction;
+            posArray[i] += normArray[i] * displacement;
+            posArray[i + 1] += normArray[i + 1] * displacement;
+            posArray[i + 2] += normArray[i + 2] * displacement;
+            changed = true;
+          }
+
+          if (changed) {
+            positions.needsUpdate = true;
+            geometry.computeVertexNormals();
+            normals.needsUpdate = true;
+          }
+        };
+
+        const scheduleSculpt = (
+          point: [number, number, number],
+          direction: number
+        ) => {
+          meshPendingRef.current = { point, direction };
+          if (meshRafRef.current) return;
+          meshRafRef.current = window.requestAnimationFrame(() => {
+            const pending = meshPendingRef.current;
+            if (pending) {
+              applySculpt(pending.point, pending.direction);
+            }
+            meshPendingRef.current = null;
+            meshRafRef.current = 0;
+          });
+        };
+
+        const handlePointer = (event: PointerEvent) => {
+          if (!canSculpt) return;
+          const tool = meshToolRef.current;
+          if (tool === "orbit") return;
+          const rect = renderer.domElement.getBoundingClientRect();
+          pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+          pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+          raycaster.setFromCamera(pointer, camera);
+          const hits = raycaster.intersectObject(mesh, false);
+          if (!hits.length) return;
+          const hit = hits[0];
+          const direction = tool === "carve" ? -1 : 1;
+          scheduleSculpt(
+            [hit.point.x, hit.point.y, hit.point.z],
+            direction
+          );
+        };
+
+        const onPointerDown = (event: PointerEvent) => {
+          if (!canSculpt) return;
+          if (meshToolRef.current === "orbit") return;
+          meshSculptingRef.current = true;
+          handlePointer(event);
+        };
+
+        const onPointerMove = (event: PointerEvent) => {
+          if (!meshSculptingRef.current) return;
+          handlePointer(event);
+        };
+
+        const onPointerUp = () => {
+          meshSculptingRef.current = false;
+          meshPendingRef.current = null;
+        };
+
+        renderer.domElement.addEventListener("pointerdown", onPointerDown);
+        renderer.domElement.addEventListener("pointermove", onPointerMove);
+        window.addEventListener("pointerup", onPointerUp);
+
+        const resize = () => {
+          const bounds = container.getBoundingClientRect();
+          const width = Math.max(1, bounds.width);
+          const height = Math.max(1, bounds.height);
+          camera.aspect = width / height;
+          camera.updateProjectionMatrix();
+          renderer.setSize(width, height, false);
+        };
+
+        const resizeObserver =
+          "ResizeObserver" in window ? new ResizeObserver(resize) : null;
+        if (resizeObserver) {
+          resizeObserver.observe(container);
+        } else {
+          window.addEventListener("resize", resize);
+        }
+        resize();
+
+        let animationId = 0;
+        const animate = () => {
+          animationId = window.requestAnimationFrame(animate);
+          controls.update();
+          renderer.render(scene, camera);
+        };
+        animate();
+
+        meshCleanupRef.current = () => {
+          if (animationId) window.cancelAnimationFrame(animationId);
+          resizeObserver?.disconnect();
+          window.removeEventListener("resize", resize);
+          renderer.domElement.removeEventListener("pointerdown", onPointerDown);
+          renderer.domElement.removeEventListener("pointermove", onPointerMove);
+          window.removeEventListener("pointerup", onPointerUp);
+          controls.dispose();
+          geometry.dispose();
+          material.dispose();
+          renderer.dispose();
+          container.replaceChildren();
+          meshStateRef.current = null;
+          if (meshRafRef.current) {
+            window.cancelAnimationFrame(meshRafRef.current);
+            meshRafRef.current = 0;
+          }
+          meshPendingRef.current = null;
+        };
+      } catch (e: unknown) {
+        if (cancelled) return;
+        const message =
+          e instanceof Error ? e.message : "Failed to initialize mesh viewer.";
+        setMeshError(message);
+      } finally {
+        if (!cancelled) {
+          setMeshLoading(false);
+        }
+      }
+    };
+
+    void initMeshViewer();
+
+    return () => {
+      cancelled = true;
+      if (meshCleanupRef.current) {
+        meshCleanupRef.current();
+        meshCleanupRef.current = null;
+      }
+    };
+  }, [
+    viewerMode,
+    viewer3dMode,
+    uploadPath,
+    meshRevision,
+    buildMeshUrl,
+    apiFetch,
+    isAuthenticated,
+  ]);
+
+  useEffect(() => {
+    const state = meshStateRef.current;
+    if (!state) return;
+    state.controls.enabled = meshTool === "orbit";
+  }, [meshTool]);
+
+  useEffect(() => {
+    if (meshCanSculpt) return;
+    if (meshTool !== "orbit") {
+      setMeshTool("orbit");
+    }
+  }, [meshCanSculpt, meshTool]);
+
+  useEffect(() => {
+    const state = meshStateRef.current;
+    if (!state) return;
+    state.material.wireframe = meshWireframe;
+    state.material.needsUpdate = true;
+  }, [meshWireframe]);
+
+  useEffect(() => {
+    const state = meshStateRef.current;
+    if (!state) return;
+    const { three, material, bounds } = state;
+    if (!meshClipEnabled) {
+      material.clippingPlanes = [];
+      material.needsUpdate = true;
+      return;
+    }
+    const plane = state.clipPlane ?? new three.Plane();
+    const axisIndex =
+      meshClipAxis === "x" ? 0 : meshClipAxis === "y" ? 1 : 2;
+    const min = bounds.min[axisIndex];
+    const max = bounds.max[axisIndex];
+    const value = min + (max - min) * meshClipValue;
+    const normal =
+      meshClipAxis === "x"
+        ? new three.Vector3(1, 0, 0)
+        : meshClipAxis === "y"
+          ? new three.Vector3(0, 1, 0)
+          : new three.Vector3(0, 0, 1);
+    const point = new three.Vector3(
+      meshClipAxis === "x" ? value : 0,
+      meshClipAxis === "y" ? value : 0,
+      meshClipAxis === "z" ? value : 0
+    );
+    plane.setFromNormalAndCoplanarPoint(normal, point);
+    state.clipPlane = plane;
+    material.clippingPlanes = [plane];
+    material.needsUpdate = true;
+  }, [meshClipEnabled, meshClipAxis, meshClipValue]);
 
   useEffect(() => {
     const state = viewer3dStateRef.current;
@@ -1753,6 +2267,60 @@ export default function App() {
       pushNotice("error", "Segmentation failed", message);
     }
   };
+
+  const handleReportFileChange = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0] ?? null;
+      setReportFile(file);
+      setReportResult(null);
+      setReportError("");
+      setReportNotice("");
+      setReportValueQuery("");
+      setReportOnlyAbnormal(false);
+    },
+    []
+  );
+
+  const handleAnalyzeReport = useCallback(async () => {
+    if (!reportFile) {
+      setReportError("Select a report file to analyze.");
+      return;
+    }
+    try {
+      setReportError("");
+      setReportNotice("");
+      setReportLoading(true);
+      const form = new FormData();
+      form.append("file", reportFile);
+      const res = await apiFetch(`${API_BASE}/api/reports/analyze`, {
+        method: "POST",
+        body: form,
+      });
+      const payload = (await res.json().catch(() => null)) as
+        | ReportAnalysisResponse
+        | { detail?: string }
+        | null;
+      if (!res.ok) {
+        throw new Error(
+          payload && "detail" in payload && payload.detail
+            ? payload.detail
+            : `Report analysis failed (${res.status})`
+        );
+      }
+      if (payload && "extracted_values" in payload) {
+        setReportResult(payload as ReportAnalysisResponse);
+        setReportNotice("Report analysis complete.");
+      } else {
+        throw new Error("Unexpected response from report analysis.");
+      }
+    } catch (e: unknown) {
+      const message =
+        e instanceof Error ? e.message : "Report analysis failed.";
+      setReportError(message);
+    } finally {
+      setReportLoading(false);
+    }
+  }, [apiFetch, reportFile]);
 
   const labelMap = useMemo(() => {
     const map = new Map<string, Label>();
@@ -3086,21 +3654,41 @@ export default function App() {
                 </div>
               </div>
               {enable3DViewer && (
-                <div className="viewer-tabs">
-                  <button
-                    type="button"
-                    className={`viewer-tab ${viewerMode === "2d" ? "active" : ""}`}
-                    onClick={() => setViewerMode("2d")}
-                  >
-                    2D slices
-                  </button>
-                  <button
-                    type="button"
-                    className={`viewer-tab ${viewerMode === "3d" ? "active" : ""}`}
-                    onClick={() => setViewerMode("3d")}
-                  >
-                    3D volume
-                  </button>
+                <div className="viewer-tabs-row">
+                  <div className="viewer-tabs">
+                    <button
+                      type="button"
+                      className={`viewer-tab ${viewerMode === "2d" ? "active" : ""}`}
+                      onClick={() => setViewerMode("2d")}
+                    >
+                      2D slices
+                    </button>
+                    <button
+                      type="button"
+                      className={`viewer-tab ${viewerMode === "3d" ? "active" : ""}`}
+                      onClick={() => setViewerMode("3d")}
+                    >
+                      3D
+                    </button>
+                  </div>
+                  {viewerMode === "3d" && (
+                    <div className="viewer-subtabs">
+                      <button
+                        type="button"
+                        className={`viewer-tab ${viewer3dMode === "volume" ? "active" : ""}`}
+                        onClick={() => setViewer3dMode("volume")}
+                      >
+                        Volume
+                      </button>
+                      <button
+                        type="button"
+                        className={`viewer-tab ${viewer3dMode === "mesh" ? "active" : ""}`}
+                        onClick={() => setViewer3dMode("mesh")}
+                      >
+                        Mesh
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -3194,14 +3782,30 @@ export default function App() {
               {uploadPath && viewerMode === "3d" && (
                 <div className="viewer-3d">
                   <div className="viewer-3d-frame">
-                    <div className="viewer-3d-canvas" ref={viewerRef} />
-                    {viewer3dLoading && (
+                    {viewer3dMode === "volume" && (
+                      <div className="viewer-3d-canvas" ref={viewerRef} />
+                    )}
+                    {viewer3dMode === "mesh" && (
+                      <div
+                        className={`viewer-3d-canvas viewer-3d-mesh viewer-3d-mesh-${meshTool}`}
+                        ref={meshViewerRef}
+                      />
+                    )}
+                    {viewer3dMode === "volume" && viewer3dLoading && (
                       <div className="viewer-3d-loading">Loading volume...</div>
                     )}
+                    {viewer3dMode === "mesh" && meshLoading && (
+                      <div className="viewer-3d-loading">Building mesh...</div>
+                    )}
                   </div>
-                  {viewer3dError && (
+                  {viewer3dMode === "volume" && viewer3dError && (
                     <div className="banner banner-error" role="alert">
                       {viewer3dError}
+                    </div>
+                  )}
+                  {viewer3dMode === "mesh" && meshError && (
+                    <div className="banner banner-error" role="alert">
+                      {meshError}
                     </div>
                   )}
                 </div>
@@ -3245,72 +3849,170 @@ export default function App() {
                 Tool Shelf
               </div>
               <div className="workspace-float-content">
-                <div className="workspace-card">
-                  <h3>Tools</h3>
-                  <div className="tool-grid">
-                    {WORKSPACE_TOOLS.map((tool) => (
-                      <button
-                        key={tool.id}
-                        type="button"
-                        className={`tool-button ${
-                          workspaceTool === tool.id ? "active" : ""
-                        }`}
-                        onClick={() => setWorkspaceTool(tool.id)}
-                      >
-                        {tool.label}
-                      </button>
-                    ))}
-                  </div>
-                  <div className="workspace-control">
-                    <label>
-                      Brush size
-                      <input
-                        type="range"
-                        min={4}
-                        max={40}
-                        value={brushSize}
-                        onChange={(event) =>
-                          setBrushSize(Number(event.target.value))
-                        }
-                      />
-                    </label>
-                    <strong>{brushSize}px</strong>
-                  </div>
-                  <div className="workspace-control">
-                    <label>
-                      Overlay opacity
-                      <input
-                        type="range"
-                        min={0.2}
-                        max={0.95}
-                        step={0.05}
-                        value={overlayOpacity}
-                        onChange={(event) =>
-                          setOverlayOpacity(Number(event.target.value))
-                        }
-                      />
-                    </label>
-                    <strong>{Math.round(overlayOpacity * 100)}%</strong>
-                  </div>
-                </div>
+                {viewerMode === "2d" && (
+                  <>
+                    <div className="workspace-card">
+                      <h3>Tools</h3>
+                      <div className="tool-grid">
+                        {WORKSPACE_TOOLS.map((tool) => (
+                          <button
+                            key={tool.id}
+                            type="button"
+                            className={`tool-button ${
+                              workspaceTool === tool.id ? "active" : ""
+                            }`}
+                            onClick={() => setWorkspaceTool(tool.id)}
+                          >
+                            {tool.label}
+                          </button>
+                        ))}
+                      </div>
+                      <div className="workspace-control">
+                        <label>
+                          Brush size
+                          <input
+                            type="range"
+                            min={4}
+                            max={40}
+                            value={brushSize}
+                            onChange={(event) =>
+                              setBrushSize(Number(event.target.value))
+                            }
+                          />
+                        </label>
+                        <strong>{brushSize}px</strong>
+                      </div>
+                      <div className="workspace-control">
+                        <label>
+                          Overlay opacity
+                          <input
+                            type="range"
+                            min={0.2}
+                            max={0.95}
+                            step={0.05}
+                            value={overlayOpacity}
+                            onChange={(event) =>
+                              setOverlayOpacity(Number(event.target.value))
+                            }
+                          />
+                        </label>
+                        <strong>{Math.round(overlayOpacity * 100)}%</strong>
+                      </div>
+                    </div>
 
-                <div className="workspace-card">
-                  <h3>Actions</h3>
-                  <div className="action-grid">
-                    <button type="button" className="btn btn-secondary" onClick={handleUndo}>
-                      Undo
-                    </button>
-                    <button type="button" className="btn btn-secondary" onClick={handleClearSlice}>
-                      Clear slice
-                    </button>
-                    <button type="button" className="btn btn-secondary" onClick={handleClearAll}>
-                      Clear all
-                    </button>
-                    <button type="button" className="btn btn-accent" onClick={handleExportAnnotations}>
-                      Export JSON
-                    </button>
+                    <div className="workspace-card">
+                      <h3>Actions</h3>
+                      <div className="action-grid">
+                        <button
+                          type="button"
+                          className="btn btn-secondary"
+                          onClick={handleUndo}
+                        >
+                          Undo
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-secondary"
+                          onClick={handleClearSlice}
+                        >
+                          Clear slice
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-secondary"
+                          onClick={handleClearAll}
+                        >
+                          Clear all
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-accent"
+                          onClick={handleExportAnnotations}
+                        >
+                          Export JSON
+                        </button>
+                      </div>
+                    </div>
+                  </>
+                )}
+
+                {viewerMode === "3d" && viewer3dMode === "mesh" && (
+                  <div className="workspace-card">
+                    <h3>Mesh sculpt</h3>
+                    <div className="tool-grid">
+                      {([
+                        { id: "orbit", label: "Orbit" },
+                        { id: "sculpt", label: "Sculpt" },
+                        { id: "carve", label: "Carve" },
+                      ] as Array<{ id: MeshTool; label: string }>).map(
+                        (tool) => (
+                          <button
+                            key={tool.id}
+                            type="button"
+                            className={`tool-button ${
+                              meshTool === tool.id ? "active" : ""
+                            }`}
+                            onClick={() => setMeshTool(tool.id)}
+                            disabled={
+                              !meshCanSculpt &&
+                              (tool.id === "sculpt" || tool.id === "carve")
+                            }
+                          >
+                            {tool.label}
+                          </button>
+                        )
+                      )}
+                    </div>
+                    <div className="workspace-control">
+                      <label>
+                        Brush radius
+                        <input
+                          type="range"
+                          min={4}
+                          max={48}
+                          value={meshBrushSize}
+                          onChange={(event) =>
+                            setMeshBrushSize(Number(event.target.value))
+                          }
+                          disabled={!meshCanSculpt}
+                        />
+                      </label>
+                      <strong>{meshBrushSize}px</strong>
+                    </div>
+                    <div className="workspace-control">
+                      <label>
+                        Strength
+                        <input
+                          type="range"
+                          min={0.1}
+                          max={1}
+                          step={0.05}
+                          value={meshStrength}
+                          onChange={(event) =>
+                            setMeshStrength(Number(event.target.value))
+                          }
+                          disabled={!meshCanSculpt}
+                        />
+                      </label>
+                      <strong>{Math.round(meshStrength * 100)}%</strong>
+                    </div>
+                    {!meshCanSculpt && (
+                      <div className="mesh-warning">
+                        Sculpting is disabled for dense meshes. Increase the
+                        mesh step or reduce the iso complexity.
+                      </div>
+                    )}
                   </div>
-                </div>
+                )}
+
+                {viewerMode === "3d" && viewer3dMode === "volume" && (
+                  <div className="workspace-card">
+                    <h3>3D navigation</h3>
+                    <p className="muted">
+                      Drag to rotate, scroll to zoom, right-click to pan.
+                    </p>
+                  </div>
+                )}
               </div>
               <div
                 className="panel-resizer panel-resizer-nw"
@@ -3364,9 +4066,27 @@ export default function App() {
                         className={viewerMode === "3d" ? "active" : ""}
                         onClick={() => setViewerMode("3d")}
                       >
-                        3D volume
+                        3D
                       </button>
                     </div>
+                    {viewerMode === "3d" && (
+                      <div className="viewer-subtabs">
+                        <button
+                          type="button"
+                          className={`viewer-tab ${viewer3dMode === "volume" ? "active" : ""}`}
+                          onClick={() => setViewer3dMode("volume")}
+                        >
+                          Volume
+                        </button>
+                        <button
+                          type="button"
+                          className={`viewer-tab ${viewer3dMode === "mesh" ? "active" : ""}`}
+                          onClick={() => setViewer3dMode("mesh")}
+                        >
+                          Mesh
+                        </button>
+                      </div>
+                    )}
                   </div>
                 )}
                 <div className="workspace-card">
@@ -3429,7 +4149,7 @@ export default function App() {
                     </>
                   )}
 
-                  {viewerMode === "3d" && (
+                  {viewerMode === "3d" && viewer3dMode === "volume" && (
                     <>
                       <div className="viewer-controls">
                         <label className="viewer-control">
@@ -3533,6 +4253,138 @@ export default function App() {
                           )}
                         </div>
                       )}
+                    </>
+                  )}
+
+                  {viewerMode === "3d" && viewer3dMode === "mesh" && (
+                    <>
+                      <div className="viewer-controls viewer-controls-stack">
+                        <label className="viewer-control">
+                          <span>Iso threshold</span>
+                          <input
+                            type="range"
+                            min={0}
+                            max={1}
+                            step={0.01}
+                            value={meshIso}
+                            onChange={(event) =>
+                              setMeshIso(Number(event.target.value))
+                            }
+                          />
+                          <span className="viewer-control-value">
+                            {meshIso.toFixed(2)}
+                          </span>
+                        </label>
+                        <label className="viewer-control">
+                          <span>Mesh step</span>
+                          <input
+                            type="range"
+                            min={1}
+                            max={6}
+                            step={1}
+                            value={meshStep}
+                            onChange={(event) =>
+                              setMeshStep(Number(event.target.value))
+                            }
+                          />
+                          <span className="viewer-control-value">
+                            {meshStep}
+                          </span>
+                        </label>
+                        <label className="viewer-control">
+                          <span>Wireframe</span>
+                          <input
+                            type="checkbox"
+                            checked={meshWireframe}
+                            onChange={(event) =>
+                              setMeshWireframe(event.target.checked)
+                            }
+                          />
+                        </label>
+                        <label className="viewer-control">
+                          <span>Clipping</span>
+                          <div className="clip-toggle">
+                            <input
+                              type="checkbox"
+                              checked={meshClipEnabled}
+                              onChange={(event) =>
+                                setMeshClipEnabled(event.target.checked)
+                              }
+                            />
+                            <select
+                              value={meshClipAxis}
+                              onChange={(event) =>
+                                setMeshClipAxis(event.target.value as ClipAxis)
+                              }
+                              disabled={!meshClipEnabled}
+                            >
+                              <option value="x">X</option>
+                              <option value="y">Y</option>
+                              <option value="z">Z</option>
+                            </select>
+                          </div>
+                          <input
+                            type="range"
+                            min={0}
+                            max={1}
+                            step={0.01}
+                            value={meshClipValue}
+                            onChange={(event) =>
+                              setMeshClipValue(Number(event.target.value))
+                            }
+                            disabled={!meshClipEnabled}
+                          />
+                        </label>
+                      </div>
+                      {volumeInfo && volumeInfo.channels > 1 && (
+                        <div className="viewer-channel">
+                          <div className="viewer-channel-head">
+                            <span>Channel</span>
+                            <strong>
+                              {viewerChannel + 1} / {volumeInfo.channels}
+                            </strong>
+                          </div>
+                          <input
+                            className="viewer-slider"
+                            type="range"
+                            min={0}
+                            max={volumeInfo.channels - 1}
+                            value={viewerChannel}
+                            onChange={(event) =>
+                              setViewerChannel(Number(event.target.value))
+                            }
+                          />
+                          {channelLabels.length === volumeInfo.channels && (
+                            <div className="viewer-channel-tags">
+                              {channelLabels.map((label, index) => (
+                                <button
+                                  key={label}
+                                  type="button"
+                                  className={`viewer-tag ${
+                                    viewerChannel === index ? "active" : ""
+                                  }`}
+                                  onClick={() => setViewerChannel(index)}
+                                >
+                                  {label}
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                      <div className="mesh-actions">
+                        <button
+                          type="button"
+                          className="btn btn-secondary btn-small"
+                          onClick={requestMeshRebuild}
+                        >
+                          Rebuild mesh
+                        </button>
+                        <div className="mesh-meta">
+                          <span>Vertices</span>
+                          <strong>{meshVertexCount.toLocaleString()}</strong>
+                        </div>
+                      </div>
                     </>
                   )}
                 </div>
@@ -3645,7 +4497,9 @@ export default function App() {
           </span>
           <span className="workspace-hint">
             {viewerMode === "3d"
-              ? "Drag to rotate, scroll to zoom, right-click to pan."
+              ? viewer3dMode === "mesh"
+                ? meshHint
+                : "Drag to rotate, scroll to zoom, right-click to pan."
               : "Use brush/erase to paint, drag to create ROIs, click-drag to measure."}
           </span>
           {volumeInfo && (
@@ -4363,10 +5217,320 @@ export default function App() {
         )}
       </section>
 
+      <section className="panel report-panel">
+        <div className="panel-head">
+          <div>
+            <h2>5. Report analysis</h2>
+            <p>Upload lab reports to extract values and generate insights.</p>
+          </div>
+          <span
+            className={`status-badge ${
+              reportResult ? "status-done" : reportLoading ? "status-running" : ""
+            }`}
+          >
+            {reportLoading
+              ? "Analyzing"
+              : reportResult
+              ? "Complete"
+              : "Awaiting report"}
+          </span>
+        </div>
+
+        {reportError && (
+          <div className="banner banner-error" role="alert">
+            {reportError}
+          </div>
+        )}
+        {reportNotice && (
+          <div className="banner banner-info" role="status">
+            {reportNotice}
+          </div>
+        )}
+
+        <div className="report-flow">
+          <div className={`report-step ${reportFile ? "is-done" : ""}`}>
+            <div className="report-step-title">Upload</div>
+            <div className="report-step-subtitle">
+              {reportFile ? "File ready" : "Choose file"}
+            </div>
+          </div>
+          <div
+            className={`report-step ${
+              reportLoading ? "is-active" : reportResult ? "is-done" : ""
+            }`}
+          >
+            <div className="report-step-title">Extract</div>
+            <div className="report-step-subtitle">
+              {reportLoading ? "Parsing" : reportResult ? "Complete" : "Waiting"}
+            </div>
+          </div>
+          <div className={`report-step ${reportResult ? "is-done" : ""}`}>
+            <div className="report-step-title">Assess</div>
+            <div className="report-step-subtitle">
+              {reportResult ? "Risk mapped" : "Pending"}
+            </div>
+          </div>
+          <div className={`report-step ${reportResult ? "is-done" : ""}`}>
+            <div className="report-step-title">Explain</div>
+            <div className="report-step-subtitle">
+              {reportResult ? "Narrative ready" : "Pending"}
+            </div>
+          </div>
+        </div>
+
+        {reportResult && (
+          <div className="report-summary">
+            <div className={`report-summary-card ${reportRiskClass}`}>
+              <span>Risk level</span>
+              <strong>{reportRiskLevel}</strong>
+            </div>
+            <div className="report-summary-card">
+              <span>Values extracted</span>
+              <strong>{reportStats.valueCount}</strong>
+            </div>
+            <div className="report-summary-card">
+              <span>Abnormalities</span>
+              <strong>{reportStats.abnormalCount}</strong>
+            </div>
+            <div className="report-summary-card">
+              <span>Possible symptoms</span>
+              <strong>{reportStats.symptomCount}</strong>
+            </div>
+          </div>
+        )}
+
+        <div className="report-grid">
+          <div className="report-column">
+            <div className="report-card report-card-upload">
+              <h3>Upload report</h3>
+              <p className="muted">
+                Accepts PDF, JPG, PNG, or TXT lab reports.
+              </p>
+              <div className="report-upload">
+                <input
+                  type="file"
+                  accept=".pdf,.png,.jpg,.jpeg,.txt"
+                  onChange={handleReportFileChange}
+                />
+                <button
+                  type="button"
+                  className="btn btn-accent"
+                  onClick={handleAnalyzeReport}
+                  disabled={!reportFile || reportLoading}
+                >
+                  {reportLoading ? "Analyzing..." : "Analyze report"}
+                </button>
+              </div>
+              {reportFile && (
+                <div className="report-file">
+                  Selected: <span className="mono">{reportFile.name}</span>
+                </div>
+              )}
+            </div>
+
+            <div className="report-card report-card-values">
+              <div className="report-card-head">
+                <div>
+                  <h3>Extracted values</h3>
+                  {reportResult && (
+                    <p className="muted report-card-subtitle">
+                      Showing {reportFilteredValues.length} of{" "}
+                      {reportValues.length} values
+                    </p>
+                  )}
+                </div>
+                <div className="report-card-tools">
+                  <input
+                    type="search"
+                    className="report-search"
+                    placeholder="Search markers"
+                    value={reportValueQuery}
+                    onChange={(event) =>
+                      setReportValueQuery(event.target.value)
+                    }
+                    disabled={!reportResult || reportLoading}
+                  />
+                  <button
+                    type="button"
+                    className={`btn btn-ghost btn-small report-filter-btn ${
+                      reportOnlyAbnormal ? "is-active" : ""
+                    }`}
+                    onClick={() => setReportOnlyAbnormal((prev) => !prev)}
+                    aria-pressed={reportOnlyAbnormal}
+                    disabled={!reportResult || reportLoading}
+                  >
+                    Abnormal only
+                  </button>
+                </div>
+              </div>
+              {reportLoading && (
+                <div className="skeleton-block">
+                  <div className="skeleton-line wide" />
+                  <div className="skeleton-line" />
+                  <div className="skeleton-line short" />
+                </div>
+              )}
+              {!reportLoading && reportResult && reportValues.length > 0 && (
+                <div className="report-table">
+                  <div className="report-table-head">
+                    <span>Marker</span>
+                    <span>Value</span>
+                    <span>Status</span>
+                  </div>
+                  {reportFilteredValues.map(([key, value]) => {
+                    const abnormal = reportAbnormalityMap.has(key);
+                    const note = reportAbnormalityMap.get(key);
+                    return (
+                      <div
+                        key={key}
+                        className={`report-table-row ${
+                          abnormal ? "is-abnormal" : ""
+                        }`}
+                      >
+                        <div className="report-table-key">{key}</div>
+                        <div className="report-table-value">
+                          {String(value)}
+                        </div>
+                        <div className="report-table-flag">
+                          {abnormal ? (
+                            <span className="report-flag report-flag-abnormal">
+                              {note || "Abnormal"}
+                            </span>
+                          ) : (
+                            <span className="report-flag report-flag-normal">
+                              Normal
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              {!reportLoading &&
+                reportResult &&
+                reportValues.length > 0 &&
+                reportFilteredValues.length === 0 && (
+                  <p className="muted">
+                    No values match the current filter.
+                  </p>
+                )}
+              {!reportLoading && reportResult && reportValues.length === 0 && (
+                <p className="muted">No structured values detected.</p>
+              )}
+              {!reportLoading && !reportResult && (
+                <p className="muted">
+                  Upload a report to see extracted values.
+                </p>
+              )}
+            </div>
+          </div>
+
+          <div className="report-column">
+            <div className="report-card report-card-risk">
+              <h3>Risk summary</h3>
+              {reportResult ? (
+                <>
+                  <div className="report-highlights">
+                    <span className={`report-pill ${reportRiskClass}`}>
+                      Risk: {reportResult.risk_analysis.risk_level}
+                    </span>
+                    <span
+                      className={`report-pill ${
+                        reportStats.abnormalCount
+                          ? "report-pill-alert"
+                          : "report-pill-soft"
+                      }`}
+                    >
+                      {reportStats.abnormalCount} abnormalities
+                    </span>
+                    <span className="report-pill report-pill-soft">
+                      {reportStats.symptomCount} symptoms
+                    </span>
+                  </div>
+                  {reportAbnormalities.length > 0 ? (
+                    <div className="report-group">
+                      <strong>Abnormalities</strong>
+                      <div className="report-pill-grid">
+                        {reportAbnormalities.map(([key, value]) => (
+                          <span key={key} className="report-pill report-pill-alert">
+                            {key}: {value}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="muted">No abnormalities detected.</p>
+                  )}
+                  {reportResult.risk_analysis.explanations.length > 0 && (
+                    <div className="report-group">
+                      <strong>Notes</strong>
+                      <div className="report-callout-stack">
+                        {reportResult.risk_analysis.explanations.map((item) => (
+                          <p key={item} className="report-callout">
+                            {item}
+                          </p>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {reportResult.risk_analysis.possible_symptoms.length > 0 && (
+                    <div className="report-group">
+                      <strong>Possible symptoms</strong>
+                      <div className="report-pill-grid">
+                        {reportResult.risk_analysis.possible_symptoms.map(
+                          (item) => (
+                            <span key={item} className="report-pill report-pill-soft">
+                              {item}
+                            </span>
+                          )
+                        )}
+                      </div>
+                    </div>
+                  )}
+                  {reportResult.risk_analysis.disclaimer && (
+                    <p className="report-callout report-callout-muted">
+                      {reportResult.risk_analysis.disclaimer}
+                    </p>
+                  )}
+                </>
+              ) : (
+                <p className="muted">
+                  Upload a report to see risk assessment details.
+                </p>
+              )}
+            </div>
+
+            <div className="report-card report-card-wide">
+              <h3>Groq explanation</h3>
+              {reportLoading && (
+                <div className="skeleton-block">
+                  <div className="skeleton-line wide" />
+                  <div className="skeleton-line" />
+                  <div className="skeleton-line short" />
+                </div>
+              )}
+              {!reportLoading && reportResult && (
+                <div className="report-explanation-block">
+                  <p className="report-explanation">
+                    {reportResult.llm_explanation}
+                  </p>
+                </div>
+              )}
+              {!reportLoading && !reportResult && (
+                <p className="muted">
+                  Groq explanations appear after a successful analysis.
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+      </section>
+
       <section className="panel history-panel">
         <div className="panel-head">
           <div>
-            <h2>5. Recent jobs</h2>
+            <h2>6. Recent jobs</h2>
             <p>Completed runs stored in this workspace.</p>
           </div>
           <button
