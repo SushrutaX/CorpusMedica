@@ -7,6 +7,7 @@ answer questions about the codebase, MONAI bundles, and medical imaging workflow
 
 import os
 import logging
+import threading
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 import google.generativeai as genai
@@ -15,6 +16,9 @@ from qdrant_client.models import Distance, VectorParams, PointStruct
 from sentence_transformers import SentenceTransformer
 
 logger = logging.getLogger(__name__)
+MAX_CONTEXT_CHARS = 1400
+MAX_HISTORY_MESSAGES = 4
+MAX_TOP_K = 4
 
 
 class RAGChatbot:
@@ -90,8 +94,41 @@ class RAGChatbot:
         
         # Create collection if needed
         self._ensure_collection()
+
+        self._indexing_lock = threading.Lock()
+        self._indexing_in_progress = False
         
         logger.info("RAG Chatbot initialized successfully")
+
+    def _start_indexing_background(self, force_reindex: bool = False) -> bool:
+        if self._is_indexed():
+            return False
+
+        with self._indexing_lock:
+            if self._indexing_in_progress:
+                return False
+            self._indexing_in_progress = True
+
+        def _run():
+            try:
+                self.index_knowledge_base(force_reindex=force_reindex)
+            except Exception as exc:
+                logger.error("Background indexing failed: %s", exc)
+            finally:
+                with self._indexing_lock:
+                    self._indexing_in_progress = False
+
+        thread = threading.Thread(target=_run, name="rag-indexer", daemon=True)
+        thread.start()
+        return True
+
+    def _safe_excerpt(self, content: str, limit: int = MAX_CONTEXT_CHARS) -> str:
+        if len(content) <= limit:
+            return content
+        trimmed = content[:limit]
+        if " " in trimmed:
+            trimmed = trimmed.rsplit(" ", 1)[0]
+        return f"{trimmed}..."
     
     def _ensure_collection(self):
         """Ensure the Qdrant collection exists."""
@@ -368,34 +405,44 @@ class RAGChatbot:
         if chat_history is None:
             chat_history = []
         
-        if not self._is_indexed():
-            logger.info("Knowledge base not indexed; indexing now")
-            self.index_knowledge_base()
+        top_k = max(1, min(top_k, MAX_TOP_K))
 
-        # Retrieve relevant context
-        context_docs = self.retrieve_context(query, top_k=top_k)
-        
+        is_indexed = self._is_indexed()
+        if not is_indexed:
+            self._start_indexing_background()
+            context_docs: List[Dict[str, Any]] = []
+        else:
+            context_docs = self.retrieve_context(query, top_k=top_k)
+        indexing_in_progress = self._indexing_in_progress
+
         # Build context string
         context_parts = []
         for idx, doc in enumerate(context_docs, 1):
             source = doc['metadata'].get('source', 'Unknown')
             doc_type = doc['metadata'].get('type', 'document')
             context_parts.append(
-                f"[Source {idx}: {doc_type} - {source}]\n{doc['content']}\n"
+                f"[Source {idx}: {doc_type} - {source}]\n{self._safe_excerpt(doc['content'])}\n"
             )
         
-        context_str = "\n---\n".join(context_parts)
+        if context_parts:
+            context_str = "\n---\n".join(context_parts)
+        else:
+            context_str = "No indexed sources available yet."
+            if indexing_in_progress:
+                context_str += " Indexing is in progress."
         
         # Build prompt
-        system_prompt = """You are an AI assistant for the Corpus Medica medical imaging platform. 
+        system_prompt = """You are an AI assistant for the Corpus Medica medical imaging platform.
 You help users understand the codebase, MONAI bundles, and medical imaging workflows.
 
-When answering questions:
-1. Use the provided context documents to give accurate, specific answers
-2. Reference specific files, functions, or configurations when relevant
-3. Explain technical concepts clearly
-4. If you're not sure, say so
-5. Format code snippets with proper markdown
+Use the provided context when available. If the context section says there are no indexed sources,
+answer using general knowledge and clearly state that sources are not available yet.
+
+Response format (Markdown):
+- Answer: 3-6 sentences.
+- Steps: short bullet list when actionable.
+- Notes: risks, caveats, or assumptions.
+- Sources: list of source file paths or "None (indexing in progress)".
 
 Context documents:
 ---
@@ -406,12 +453,11 @@ Chat history:
 {history}
 
 User question: {query}
-
-Provide a helpful, accurate answer based on the context above."""
+"""
         
         # Format history
         history_str = ""
-        for msg in chat_history[-6:]:  # Last 3 exchanges
+        for msg in chat_history[-MAX_HISTORY_MESSAGES:]:
             role = msg.get("role", "user")
             content = msg.get("content", "")
             history_str += f"{role}: {content}\n"
@@ -424,7 +470,13 @@ Provide a helpful, accurate answer based on the context above."""
         
         # Generate response
         try:
-            response = self.model.generate_content(prompt)
+            response = self.model.generate_content(
+                prompt,
+                generation_config={
+                    "temperature": 0.2,
+                    "max_output_tokens": 650
+                }
+            )
             answer = response.text
         except Exception as e:
             logger.error(f"Error generating response: {e}")
