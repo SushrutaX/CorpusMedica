@@ -142,7 +142,28 @@ type SliceIndex = Record<AxisKey, number>;
 
 type ViewerMode = "2d" | "3d";
 type Viewer3DMode = "volume" | "mesh";
-type MeshTool = "orbit" | "sculpt" | "carve";
+type MeshTool = "orbit" | "sculpt" | "carve" | "select";
+type MeshMaterialPreset =
+  | "brain"
+  | "bone"
+  | "vessel"
+  | "skin"
+  | "muscle"
+  | "glass";
+type MeshSource = "scan" | "mask";
+
+type MeshPart = {
+  mesh: any;
+  geometry: any;
+  center: [number, number, number];
+  direction: [number, number, number];
+};
+
+type MeshSelection = {
+  partIndex: number;
+  indices: Set<number>;
+  overlay: any;
+};
 
 type MeshBounds = {
   min: [number, number, number];
@@ -155,11 +176,17 @@ type MeshViewerState = {
   scene: any;
   camera: any;
   controls: any;
-  mesh: any;
-  geometry: any;
+  meshGroup: any;
+  meshParts: MeshPart[];
+  sourceGeometry: any;
   material: any;
+  overlayMesh?: any;
+  overlayMaterial?: any;
   clipPlane: any | null;
   bounds: MeshBounds;
+  maxDim: number;
+  activePartIndex: number;
+  selection?: MeshSelection;
 };
 type SliceColorMap = "grayscale" | "bone" | "hot" | "cool" | "viridis";
 type VolumeColorMap =
@@ -249,13 +276,97 @@ const AUTH_REQUIRED =
 const AUTH_TOKEN_KEY = "medai_auth_token";
 const AUTH_REFRESH_KEY = "medai_auth_refresh";
 
-const buildDownloadUrl = (path: string) =>
-  `${API_BASE}/api/download?path=${encodeURIComponent(path)}`;
-
 const SKELETONS = Array.from({ length: 3 }, (_, index) => index);
 const enable3DViewer =
   ((import.meta.env.VITE_ENABLE_3D_VIEWER as string) ?? "true") === "true";
 const MAX_MESH_SCULPT_VERTICES = 200000;
+const MAX_MESH_PARTS = 12;
+const MESH_MIN_TRIANGLES_PER_PART = 24;
+const MESH_MATERIAL_PRESETS: Record<
+  MeshMaterialPreset,
+  {
+    label: string;
+    color: number;
+    emissive?: number;
+    roughness: number;
+    metalness: number;
+    clearcoat?: number;
+    clearcoatRoughness?: number;
+    transmission?: number;
+    thickness?: number;
+    ior?: number;
+    sheen?: number;
+    sheenColor?: number;
+  }
+> = {
+  brain: {
+    label: "Brain tissue",
+    color: 0xd9a7a2,
+    emissive: 0x3b1f22,
+    roughness: 0.45,
+    metalness: 0.05,
+    clearcoat: 0.25,
+    clearcoatRoughness: 0.35,
+    transmission: 0.18,
+    thickness: 0.6,
+    sheen: 0.35,
+    sheenColor: 0xf5b5b0,
+  },
+  bone: {
+    label: "Bone",
+    color: 0xe9e2d6,
+    roughness: 0.7,
+    metalness: 0.05,
+    clearcoat: 0.08,
+    clearcoatRoughness: 0.6,
+  },
+  vessel: {
+    label: "Vessel",
+    color: 0xb91c1c,
+    emissive: 0x31060b,
+    roughness: 0.35,
+    metalness: 0.08,
+    clearcoat: 0.45,
+    clearcoatRoughness: 0.2,
+    sheen: 0.45,
+    sheenColor: 0xffa3a3,
+  },
+  skin: {
+    label: "Skin",
+    color: 0xc98b6a,
+    emissive: 0x2a1610,
+    roughness: 0.52,
+    metalness: 0.05,
+    clearcoat: 0.32,
+    clearcoatRoughness: 0.25,
+    transmission: 0.22,
+    thickness: 0.9,
+    sheen: 0.3,
+    sheenColor: 0xffc9b2,
+  },
+  muscle: {
+    label: "Muscle",
+    color: 0x9b2d2d,
+    emissive: 0x2a0a0a,
+    roughness: 0.48,
+    metalness: 0.05,
+    clearcoat: 0.2,
+    clearcoatRoughness: 0.35,
+    sheen: 0.25,
+    sheenColor: 0xff9d9d,
+  },
+  glass: {
+    label: "Glass",
+    color: 0x6fb9ff,
+    roughness: 0.08,
+    metalness: 0.0,
+    clearcoat: 0.8,
+    clearcoatRoughness: 0.1,
+    transmission: 0.9,
+    thickness: 1.2,
+    ior: 1.4,
+  },
+};
 const enableViewerWorkspace =
   ((import.meta.env.VITE_ENABLE_VIEWER_WORKSPACE as string) ?? "true") ===
   "true";
@@ -381,10 +492,37 @@ export default function App() {
   const [meshStrength, setMeshStrength] = useState<number>(0.6);
   const [meshIso, setMeshIso] = useState<number>(0.35);
   const [meshStep, setMeshStep] = useState<number>(2);
+  const [meshSource, setMeshSource] = useState<MeshSource>("scan");
+  const [meshOverlayEnabled, setMeshOverlayEnabled] = useState<boolean>(true);
+  const [meshOverlayOpacity, setMeshOverlayOpacity] = useState<number>(0.55);
+  const [meshOverlayIso, setMeshOverlayIso] = useState<number>(0.5);
+  const [meshOverlayStep, setMeshOverlayStep] = useState<number>(1);
   const [meshWireframe, setMeshWireframe] = useState<boolean>(false);
   const [meshClipEnabled, setMeshClipEnabled] = useState<boolean>(false);
   const [meshClipAxis, setMeshClipAxis] = useState<ClipAxis>("x");
   const [meshClipValue, setMeshClipValue] = useState<number>(0.5);
+  const [meshExplodeEnabled, setMeshExplodeEnabled] =
+    useState<boolean>(false);
+  const [meshExplodeDistance, setMeshExplodeDistance] =
+    useState<number>(0.35);
+  const [meshMaterialPreset, setMeshMaterialPreset] =
+    useState<MeshMaterialPreset>("brain");
+  const [meshGroupCount, setMeshGroupCount] = useState<number>(6);
+  const [meshPartCount, setMeshPartCount] = useState<number>(0);
+  const [meshActiveGroup, setMeshActiveGroup] = useState<number>(0);
+  const [meshIsolateEnabled, setMeshIsolateEnabled] =
+    useState<boolean>(false);
+  const [meshSelectionRadius, setMeshSelectionRadius] =
+    useState<number>(8);
+  const [meshSelectionStrength, setMeshSelectionStrength] =
+    useState<number>(0.5);
+  const [meshSelectionCount, setMeshSelectionCount] =
+    useState<number>(0);
+  const [meshSelectionPrecision, setMeshSelectionPrecision] =
+    useState<boolean>(false);
+  const [meshPartOffsets, setMeshPartOffsets] = useState<Record<number, number>>(
+    {}
+  );
   const [meshLoading, setMeshLoading] = useState<boolean>(false);
   const [meshError, setMeshError] = useState<string>("");
   const [meshVertexCount, setMeshVertexCount] = useState<number>(0);
@@ -460,13 +598,20 @@ export default function App() {
   const meshCleanupRef = useRef<(() => void) | null>(null);
   const meshStateRef = useRef<MeshViewerState | null>(null);
   const meshSculptingRef = useRef<boolean>(false);
-  const meshPendingRef = useRef<{ point: [number, number, number]; direction: number } | null>(
-    null
-  );
+  const meshPendingRef = useRef<{
+    point: [number, number, number];
+    direction: number;
+    partIndex: number;
+  } | null>(null);
   const meshRafRef = useRef<number>(0);
   const meshBrushRef = useRef<number>(meshBrushSize);
   const meshStrengthRef = useRef<number>(meshStrength);
   const meshToolRef = useRef<MeshTool>(meshTool);
+  const meshExplodeEnabledRef = useRef<boolean>(meshExplodeEnabled);
+  const meshExplodeDistanceRef = useRef<number>(meshExplodeDistance);
+  const meshSelectionRadiusRef = useRef<number>(meshSelectionRadius);
+  const meshSelectionStrengthRef = useRef<number>(meshSelectionStrength);
+  const meshSelectionPrecisionRef = useRef<boolean>(meshSelectionPrecision);
   const annotationsRef = useRef<Record<string, AnnotationSet>>({});
   const drawingRef = useRef<DrawingState | null>(null);
   const canvasRefs = useRef<Record<AxisKey, HTMLCanvasElement | null>>({
@@ -515,6 +660,26 @@ export default function App() {
   useEffect(() => {
     meshToolRef.current = meshTool;
   }, [meshTool]);
+
+  useEffect(() => {
+    meshExplodeEnabledRef.current = meshExplodeEnabled;
+  }, [meshExplodeEnabled]);
+
+  useEffect(() => {
+    meshExplodeDistanceRef.current = meshExplodeDistance;
+  }, [meshExplodeDistance]);
+
+  useEffect(() => {
+    meshSelectionRadiusRef.current = meshSelectionRadius;
+  }, [meshSelectionRadius]);
+
+  useEffect(() => {
+    meshSelectionStrengthRef.current = meshSelectionStrength;
+  }, [meshSelectionStrength]);
+
+  useEffect(() => {
+    meshSelectionPrecisionRef.current = meshSelectionPrecision;
+  }, [meshSelectionPrecision]);
 
   useEffect(() => {
     if (isWorkspace) return;
@@ -628,15 +793,24 @@ export default function App() {
     authStep === "forgot-request" || authStep === "forgot-verify";
   const isVerifyFlow =
     authStep === "verify-request" || authStep === "verify-confirm";
+  const meshSculptEnabled = meshCanSculpt && !meshExplodeEnabled;
+  const activePartOffset = meshPartOffsets[meshActiveGroup] ?? 0;
+  const hasPartOffsets = Object.keys(meshPartOffsets).length > 0;
   const meshHint = useMemo(() => {
     if (meshTool === "orbit") {
       return "Orbit tool: drag to rotate, scroll to zoom, right-click to pan.";
     }
-    if (meshTool === "sculpt") {
-      return "Sculpt tool: drag to add volume. Switch to Orbit to navigate.";
+    if (meshTool === "select") {
+      return "Select tool: click to pick voxels. Hold Ctrl or Shift + drag to orbit.";
     }
-    return "Carve tool: drag to remove volume. Switch to Orbit to navigate.";
-  }, [meshTool]);
+    if (meshExplodeEnabled) {
+      return "Explode view: separate anatomy groups. Hold Ctrl or Shift + drag to orbit.";
+    }
+    if (meshTool === "sculpt") {
+      return "Sculpt tool: drag to add volume. Hold Ctrl or Shift + drag to orbit.";
+    }
+    return "Carve tool: drag to remove volume. Hold Ctrl or Shift + drag to orbit.";
+  }, [meshTool, meshExplodeEnabled]);
 
   useEffect(() => {
     if (!showLogin) return undefined;
@@ -865,26 +1039,207 @@ export default function App() {
     return `${API_BASE}/api/uploads/volume-file?${params.toString()}`;
   }, [uploadPath, viewerChannel, authToken]);
 
-  const buildMeshUrl = useCallback(() => {
-    if (!uploadPath) return "";
-    const params = new URLSearchParams({
-      path: uploadPath,
-      channel: String(viewerChannel),
-      iso: String(meshIso),
-      step: String(meshStep),
-      rev: String(meshRevision),
-      t: String(Date.now()),
-    });
-    if (authToken) {
-      params.set("token", authToken);
+  const buildMeshUrl = useCallback(
+    (
+      pathOverride?: string,
+      isoOverride?: number,
+      stepOverride?: number,
+      channelOverride?: number
+    ) => {
+      const path = pathOverride ?? uploadPath;
+      if (!path) return "";
+      const iso = isoOverride ?? meshIso;
+      const step = stepOverride ?? meshStep;
+      const channel = channelOverride ?? viewerChannel;
+      const params = new URLSearchParams({
+        path,
+        channel: String(channel),
+        iso: String(iso),
+        step: String(step),
+        rev: String(meshRevision),
+        t: String(Date.now()),
+      });
+      if (authToken) {
+        params.set("token", authToken);
+      }
+      return `${API_BASE}/api/uploads/mesh?${params.toString()}`;
+    },
+    [uploadPath, viewerChannel, meshIso, meshStep, meshRevision, authToken]
+  );
+
+  const fallbackMaskPath = useMemo(() => {
+    if (!jobHistory.length) return "";
+    const candidates = jobHistory.filter(
+      (item) => item.status === "done" && Boolean(item.outputs?.mask_path)
+    );
+    if (!candidates.length) return "";
+    if (uploadPath) {
+      const match = candidates.find((item) => item.input_path === uploadPath);
+      if (match) return match.outputs.mask_path;
     }
-    return `${API_BASE}/api/uploads/mesh?${params.toString()}`;
-  }, [uploadPath, viewerChannel, meshIso, meshStep, meshRevision, authToken]);
+    return candidates[0]?.outputs?.mask_path ?? "";
+  }, [jobHistory, uploadPath]);
+
+  const meshMaskPath =
+    jobResult?.outputs?.mask_path && jobResult.outputs.mask_path.length > 0
+      ? jobResult.outputs.mask_path
+      : fallbackMaskPath;
+  const meshMaskAvailable = Boolean(meshMaskPath);
+  const meshPrimaryPath = useMemo(
+    () => (meshSource === "mask" ? meshMaskPath : uploadPath),
+    [meshSource, meshMaskPath, uploadPath]
+  );
+  const meshOverlayPath = useMemo(
+    () => (meshSource === "scan" && meshOverlayEnabled ? meshMaskPath : ""),
+    [meshSource, meshOverlayEnabled, meshMaskPath]
+  );
 
   const requestMeshRebuild = useCallback(() => {
     if (!uploadPath) return;
     setMeshRevision((value) => value + 1);
   }, [uploadPath]);
+
+  const clearMeshSelection = useCallback(() => {
+    const state = meshStateRef.current;
+    if (!state?.selection) {
+      setMeshSelectionCount(0);
+      return;
+    }
+    const overlay = state.selection.overlay;
+    if (overlay?.parent) {
+      overlay.parent.remove(overlay);
+    }
+    if (overlay?.geometry) {
+      overlay.geometry.dispose();
+    }
+    if (overlay?.material) {
+      overlay.material.dispose();
+    }
+    state.selection = undefined;
+    setMeshSelectionCount(0);
+  }, []);
+
+  const rebuildMeshSelectionOverlay = useCallback(
+    (partIndex: number, indices: Set<number>) => {
+      const state = meshStateRef.current;
+      if (!state) return;
+      if (state.selection?.overlay) {
+        const oldOverlay = state.selection.overlay;
+        if (oldOverlay.parent) {
+          oldOverlay.parent.remove(oldOverlay);
+        }
+        oldOverlay.geometry?.dispose?.();
+        oldOverlay.material?.dispose?.();
+        state.selection = undefined;
+      }
+      const part = state.meshParts[partIndex];
+      if (!part) return;
+      const { three: THREE } = state;
+      const positions = part.geometry.attributes.position
+        .array as Float32Array;
+      const overlayPositions = new Float32Array(indices.size * 3);
+      let cursor = 0;
+      indices.forEach((index) => {
+        const offset = index * 3;
+        overlayPositions[cursor] = positions[offset];
+        overlayPositions[cursor + 1] = positions[offset + 1];
+        overlayPositions[cursor + 2] = positions[offset + 2];
+        cursor += 3;
+      });
+      const overlayGeometry = new THREE.BufferGeometry();
+      overlayGeometry.setAttribute(
+        "position",
+        new THREE.BufferAttribute(overlayPositions, 3)
+      );
+      const overlayMaterial = new THREE.PointsMaterial({
+        color: new THREE.Color(0x38bdf8),
+        size: Math.max(state.maxDim * 0.012, 0.05),
+        sizeAttenuation: true,
+        transparent: true,
+        opacity: 0.9,
+        depthTest: false,
+      });
+      const overlay = new THREE.Points(overlayGeometry, overlayMaterial);
+      overlay.renderOrder = 3;
+      overlay.frustumCulled = false;
+      part.mesh.add(overlay);
+      state.selection = { partIndex, indices, overlay };
+      state.activePartIndex = partIndex;
+      setMeshActiveGroup(partIndex);
+      setMeshSelectionCount(indices.size);
+    },
+    []
+  );
+
+  const nudgeMeshSelection = useCallback((direction: number) => {
+    const state = meshStateRef.current;
+    if (!state?.selection) return;
+    const part = state.meshParts[state.selection.partIndex];
+    if (!part) return;
+    const positions = part.geometry.attributes.position;
+    const normals = part.geometry.attributes.normal;
+    const posArray = positions.array as Float32Array;
+    const normArray = normals.array as Float32Array;
+    const step =
+      (meshSelectionStrengthRef.current * state.maxDim * 0.01) * direction;
+    state.selection.indices.forEach((index) => {
+      const offset = index * 3;
+      posArray[offset] += normArray[offset] * step;
+      posArray[offset + 1] += normArray[offset + 1] * step;
+      posArray[offset + 2] += normArray[offset + 2] * step;
+    });
+    positions.needsUpdate = true;
+    part.geometry.computeVertexNormals();
+    normals.needsUpdate = true;
+
+    const overlay = state.selection.overlay;
+    if (overlay?.geometry?.attributes?.position) {
+      const overlayArray = overlay.geometry.attributes.position
+        .array as Float32Array;
+      let cursor = 0;
+      state.selection.indices.forEach((index) => {
+        const offset = index * 3;
+        overlayArray[cursor] = posArray[offset];
+        overlayArray[cursor + 1] = posArray[offset + 1];
+        overlayArray[cursor + 2] = posArray[offset + 2];
+        cursor += 3;
+      });
+      overlay.geometry.attributes.position.needsUpdate = true;
+    } else {
+      rebuildMeshSelectionOverlay(state.selection.partIndex, state.selection.indices);
+    }
+  }, [rebuildMeshSelectionOverlay]);
+
+  const stepMeshActiveGroup = useCallback(
+    (direction: number) => {
+      setMeshActiveGroup((value) => {
+        if (meshPartCount <= 1) return 0;
+        const next = value + direction;
+        if (next < 0) return meshPartCount - 1;
+        if (next >= meshPartCount) return 0;
+        return next;
+      });
+    },
+    [meshPartCount]
+  );
+
+  const updateActivePartOffset = useCallback(
+    (value: number) => {
+      const clamped = Math.max(-1, Math.min(1, value));
+      setMeshPartOffsets((prev) => {
+        const next = { ...prev, [meshActiveGroup]: clamped };
+        if (Math.abs(clamped) < 0.001) {
+          delete next[meshActiveGroup];
+        }
+        return next;
+      });
+    },
+    [meshActiveGroup]
+  );
+
+  const resetPartOffsets = useCallback(() => {
+    setMeshPartOffsets({});
+  }, []);
 
   useEffect(() => {
     if (AUTH_REQUIRED && !isAuthenticated) return;
@@ -1231,10 +1586,10 @@ export default function App() {
 
   useEffect(() => {
     if (viewerMode !== "3d" || viewer3dMode !== "mesh") return;
-    if (!uploadPath) return;
+    if (!meshPrimaryPath) return;
     setMeshError("");
     setMeshRevision((value) => value + 1);
-  }, [viewerMode, viewer3dMode, uploadPath]);
+  }, [viewerMode, viewer3dMode, meshPrimaryPath]);
 
   useEffect(() => {
     if (AUTH_REQUIRED && !isAuthenticated) return;
@@ -1247,12 +1602,15 @@ export default function App() {
       setMeshError("");
       return;
     }
-    if (!uploadPath || !meshViewerRef.current) {
+    if (!meshPrimaryPath || !meshViewerRef.current) {
       if (meshCleanupRef.current) {
         meshCleanupRef.current();
         meshCleanupRef.current = null;
       }
       setMeshLoading(false);
+      if (meshSource === "mask" && !meshMaskAvailable) {
+        setMeshError("Segmentation mask not available yet.");
+      }
       return;
     }
 
@@ -1309,42 +1667,327 @@ export default function App() {
         keyLight.position.set(4, 6, 8);
         const fillLight = new THREE.DirectionalLight(0x7dd3fc, 0.4);
         fillLight.position.set(-6, -2, 4);
-        scene.add(ambient, keyLight, fillLight);
+        const rimLight = new THREE.DirectionalLight(0x93c5fd, 0.55);
+        rimLight.position.set(-8, 4, -6);
+        scene.add(ambient, keyLight, fillLight, rimLight);
 
-        const response = await apiFetch(buildMeshUrl());
+        const primaryChannel = meshSource === "mask" ? 0 : viewerChannel;
+        const response = await apiFetch(
+          buildMeshUrl(meshPrimaryPath, meshIso, meshStep, primaryChannel)
+        );
         if (!response.ok) {
           throw new Error(`Mesh download failed (${response.status})`);
         }
         const buffer = await response.arrayBuffer();
         const loader = new PLYLoader();
-        const geometry = loader.parse(buffer);
-        geometry.computeVertexNormals();
-        geometry.center();
-        geometry.computeBoundingBox();
+        const rawGeometry = loader.parse(buffer);
+        const sourceGeometry = rawGeometry.index
+          ? rawGeometry.toNonIndexed()
+          : rawGeometry;
+        sourceGeometry.computeVertexNormals();
+        sourceGeometry.computeBoundingBox();
+        const rawBounds = sourceGeometry.boundingBox
+          ? sourceGeometry.boundingBox.clone()
+          : new THREE.Box3().setFromBufferAttribute(
+              sourceGeometry.attributes.position
+            );
+        const mainCenter = rawBounds.getCenter(new THREE.Vector3());
+        sourceGeometry.translate(-mainCenter.x, -mainCenter.y, -mainCenter.z);
+        sourceGeometry.computeBoundingBox();
 
-        const material = new THREE.MeshStandardMaterial({
-          color: new THREE.Color(0x7dd3fc),
-          roughness: 0.35,
-          metalness: 0.05,
-          side: THREE.DoubleSide,
-        });
-
-        const mesh = new THREE.Mesh(geometry, material);
-        scene.add(mesh);
-
-        const bounds = geometry.boundingBox
-          ? geometry.boundingBox.clone()
-          : new THREE.Box3().setFromObject(mesh);
+        const bounds = sourceGeometry.boundingBox
+          ? sourceGeometry.boundingBox.clone()
+          : new THREE.Box3().setFromBufferAttribute(
+              sourceGeometry.attributes.position
+            );
+        const center = bounds.getCenter(new THREE.Vector3());
         const size = new THREE.Vector3();
         bounds.getSize(size);
         const maxDim = Math.max(size.x, size.y, size.z) || 1;
+
+        const materialPreset = MESH_MATERIAL_PRESETS[meshMaterialPreset];
+        const material = new THREE.MeshPhysicalMaterial({
+          color: new THREE.Color(materialPreset.color),
+          roughness: materialPreset.roughness,
+          metalness: materialPreset.metalness,
+          clearcoat: materialPreset.clearcoat ?? 0,
+          clearcoatRoughness: materialPreset.clearcoatRoughness ?? 0,
+          transmission: materialPreset.transmission ?? 0,
+          thickness: materialPreset.thickness ?? 0,
+          ior: materialPreset.ior ?? 1.5,
+          sheen: materialPreset.sheen ?? 0,
+          sheenColor: new THREE.Color(
+            materialPreset.sheenColor ?? 0x000000
+          ),
+          emissive: new THREE.Color(materialPreset.emissive ?? 0x000000),
+          side: THREE.DoubleSide,
+        });
+
+        const meshGroup = new THREE.Group();
+        const positions = sourceGeometry.attributes.position
+          .array as Float32Array;
+        const totalVertices = sourceGeometry.attributes.position.count;
+        const triangleCount = Math.max(1, Math.floor(totalVertices / 3));
+        const requestedParts = Math.min(
+          MAX_MESH_PARTS,
+          Math.max(1, meshGroupCount)
+        );
+        const maxPartsByTriangles = Math.max(
+          1,
+          Math.floor(triangleCount / MESH_MIN_TRIANGLES_PER_PART)
+        );
+        const sampleStride = Math.max(1, Math.floor(totalVertices / 2200));
+        const samples: number[] = [];
+        for (let i = 0; i < totalVertices; i += sampleStride) {
+          const offset = i * 3;
+          samples.push(
+            positions[offset],
+            positions[offset + 1],
+            positions[offset + 2]
+          );
+        }
+        const sampleCount = Math.max(1, Math.floor(samples.length / 3));
+        let partCount = Math.min(requestedParts, maxPartsByTriangles, sampleCount);
+        if (!Number.isFinite(partCount) || partCount < 1) {
+          partCount = 1;
+        }
+
+        const meshParts: MeshPart[] = [];
+        if (partCount <= 1) {
+          const partGeometry = sourceGeometry.clone();
+          partGeometry.computeVertexNormals();
+          partGeometry.computeBoundingBox();
+          const partMesh = new THREE.Mesh(partGeometry, material);
+          meshGroup.add(partMesh);
+          const partCenterVec = new THREE.Vector3();
+          partGeometry.boundingBox?.getCenter(partCenterVec);
+          const directionVec = partCenterVec.clone().sub(center);
+          if (directionVec.length() < 0.0001) {
+            directionVec.set(0, 0, 1);
+          } else {
+            directionVec.normalize();
+          }
+          meshParts.push({
+            mesh: partMesh,
+            geometry: partGeometry,
+            center: [partCenterVec.x, partCenterVec.y, partCenterVec.z],
+            direction: [directionVec.x, directionVec.y, directionVec.z],
+          });
+        } else {
+          const centers: Array<[number, number, number]> = Array.from(
+            { length: partCount },
+            (_, index) => {
+              const sampleIndex = Math.min(
+                sampleCount - 1,
+                Math.floor((index / partCount) * sampleCount)
+              );
+              const base = sampleIndex * 3;
+              return [samples[base], samples[base + 1], samples[base + 2]];
+            }
+          );
+
+          for (let iter = 0; iter < 6; iter += 1) {
+            const sums: Array<[number, number, number, number]> = Array.from(
+              { length: partCount },
+              () => [0, 0, 0, 0]
+            );
+            for (let s = 0; s < sampleCount; s += 1) {
+              const base = s * 3;
+              const x = samples[base];
+              const y = samples[base + 1];
+              const z = samples[base + 2];
+              let best = 0;
+              let bestDist = Number.POSITIVE_INFINITY;
+              for (let k = 0; k < partCount; k += 1) {
+                const dx = x - centers[k][0];
+                const dy = y - centers[k][1];
+                const dz = z - centers[k][2];
+                const dist = dx * dx + dy * dy + dz * dz;
+                if (dist < bestDist) {
+                  bestDist = dist;
+                  best = k;
+                }
+              }
+              const bucket = sums[best];
+              bucket[0] += x;
+              bucket[1] += y;
+              bucket[2] += z;
+              bucket[3] += 1;
+            }
+            for (let k = 0; k < partCount; k += 1) {
+              const bucket = sums[k];
+              if (bucket[3] > 0) {
+                centers[k] = [
+                  bucket[0] / bucket[3],
+                  bucket[1] / bucket[3],
+                  bucket[2] / bucket[3],
+                ];
+              }
+            }
+          }
+
+          const groupBuckets: number[][] = Array.from(
+            { length: partCount },
+            () => []
+          );
+          for (let i = 0; i < positions.length; i += 9) {
+            const x1 = positions[i];
+            const y1 = positions[i + 1];
+            const z1 = positions[i + 2];
+            const x2 = positions[i + 3];
+            const y2 = positions[i + 4];
+            const z2 = positions[i + 5];
+            const x3 = positions[i + 6];
+            const y3 = positions[i + 7];
+            const z3 = positions[i + 8];
+            const cx = (x1 + x2 + x3) / 3;
+            const cy = (y1 + y2 + y3) / 3;
+            const cz = (z1 + z2 + z3) / 3;
+            let best = 0;
+            let bestDist = Number.POSITIVE_INFINITY;
+            for (let k = 0; k < partCount; k += 1) {
+              const dx = cx - centers[k][0];
+              const dy = cy - centers[k][1];
+              const dz = cz - centers[k][2];
+              const dist = dx * dx + dy * dy + dz * dz;
+              if (dist < bestDist) {
+                bestDist = dist;
+                best = k;
+              }
+            }
+            const bucket = groupBuckets[best];
+            bucket.push(
+              x1,
+              y1,
+              z1,
+              x2,
+              y2,
+              z2,
+              x3,
+              y3,
+              z3
+            );
+          }
+
+          groupBuckets.forEach((bucket) => {
+            if (bucket.length < 9) return;
+            const partGeometry = new THREE.BufferGeometry();
+            partGeometry.setAttribute(
+              "position",
+              new THREE.BufferAttribute(new Float32Array(bucket), 3)
+            );
+            partGeometry.computeVertexNormals();
+            partGeometry.computeBoundingBox();
+            const partMesh = new THREE.Mesh(partGeometry, material);
+            meshGroup.add(partMesh);
+            const partCenterVec = new THREE.Vector3();
+            partGeometry.boundingBox?.getCenter(partCenterVec);
+            const directionVec = partCenterVec.clone().sub(center);
+            if (directionVec.length() < 0.0001) {
+              directionVec.set(0, 0, 1);
+            } else {
+              directionVec.normalize();
+            }
+            meshParts.push({
+              mesh: partMesh,
+              geometry: partGeometry,
+              center: [partCenterVec.x, partCenterVec.y, partCenterVec.z],
+              direction: [directionVec.x, directionVec.y, directionVec.z],
+            });
+          });
+
+          if (!meshParts.length) {
+            const fallbackGeometry = sourceGeometry.clone();
+            fallbackGeometry.computeVertexNormals();
+            fallbackGeometry.computeBoundingBox();
+            const fallbackMesh = new THREE.Mesh(fallbackGeometry, material);
+            meshGroup.add(fallbackMesh);
+            const fallbackCenter = new THREE.Vector3();
+            fallbackGeometry.boundingBox?.getCenter(fallbackCenter);
+            const directionVec = fallbackCenter.clone().sub(center);
+            if (directionVec.length() < 0.0001) {
+              directionVec.set(0, 0, 1);
+            } else {
+              directionVec.normalize();
+            }
+            meshParts.push({
+              mesh: fallbackMesh,
+              geometry: fallbackGeometry,
+              center: [fallbackCenter.x, fallbackCenter.y, fallbackCenter.z],
+              direction: [directionVec.x, directionVec.y, directionVec.z],
+            });
+          }
+        }
+
+        scene.add(meshGroup);
+        let overlayMesh: any | null = null;
+        let overlayMaterial: any | null = null;
+        if (meshOverlayPath) {
+          try {
+            const overlayResponse = await apiFetch(
+              buildMeshUrl(meshOverlayPath, meshOverlayIso, meshOverlayStep, 0)
+            );
+            if (overlayResponse.ok) {
+              const overlayBuffer = await overlayResponse.arrayBuffer();
+              const overlayRaw = loader.parse(overlayBuffer);
+              const overlayGeometry = overlayRaw.index
+                ? overlayRaw.toNonIndexed()
+                : overlayRaw;
+              overlayGeometry.computeVertexNormals();
+              overlayGeometry.computeBoundingBox();
+              overlayGeometry.translate(-mainCenter.x, -mainCenter.y, -mainCenter.z);
+              overlayGeometry.computeBoundingBox();
+              const overlayOpacity = Math.min(
+                0.95,
+                Math.max(0.15, meshOverlayOpacity)
+              );
+              overlayMaterial = new THREE.MeshPhysicalMaterial({
+                color: new THREE.Color(0xff3b30),
+                emissive: new THREE.Color(0x8b1510),
+                roughness: 0.25,
+                metalness: 0.05,
+                clearcoat: 0.55,
+                clearcoatRoughness: 0.25,
+                transmission: 0.08,
+                thickness: 0.4,
+                transparent: true,
+                opacity: overlayOpacity,
+                depthWrite: false,
+                polygonOffset: true,
+                polygonOffsetFactor: -1,
+                polygonOffsetUnits: -1,
+                side: THREE.DoubleSide,
+              });
+              overlayMesh = new THREE.Mesh(overlayGeometry, overlayMaterial);
+              overlayMesh.renderOrder = 4;
+              overlayMesh.frustumCulled = false;
+              scene.add(overlayMesh);
+            }
+          } catch {
+            // overlay is optional
+          }
+        }
         camera.position.set(0, 0, maxDim * 1.6);
         camera.near = Math.max(0.1, maxDim * 0.02);
         camera.far = Math.max(200, maxDim * 6);
         camera.updateProjectionMatrix();
         controls.update();
 
-        const vertexCount = geometry.attributes.position.count;
+        const grid = new THREE.GridHelper(
+          maxDim * 2.2,
+          24,
+          0x1f2937,
+          0x0f172a
+        );
+        if ("material" in grid) {
+          const gridMaterial = grid.material as any;
+          gridMaterial.opacity = 0.35;
+          gridMaterial.transparent = true;
+        }
+        grid.position.set(0, -maxDim * 0.55, 0);
+        scene.add(grid);
+
+        const vertexCount = sourceGeometry.attributes.position.count;
         setMeshVertexCount(vertexCount);
         const canSculpt = vertexCount <= MAX_MESH_SCULPT_VERTICES;
         setMeshCanSculpt(canSculpt);
@@ -1354,28 +1997,64 @@ export default function App() {
           max: [bounds.max.x, bounds.max.y, bounds.max.z],
         };
 
+        const meshIndexMap = new Map<any, number>();
+        meshParts.forEach((part, index) => {
+          meshIndexMap.set(part.mesh, index);
+        });
+
         meshStateRef.current = {
           three: THREE,
           renderer,
           scene,
           camera,
           controls,
-          mesh,
-          geometry,
+          meshGroup,
+          meshParts,
+          sourceGeometry,
           material,
+          overlayMesh,
+          overlayMaterial,
           clipPlane: null,
           bounds: boundsPayload,
+          maxDim,
+          activePartIndex: 0,
         };
+
+        clearMeshSelection();
+        setMeshPartCount(meshParts.length);
+        setMeshActiveGroup(0);
+        setMeshSelectionCount(0);
+        setMeshPartOffsets({});
 
         const raycaster = new THREE.Raycaster();
         const pointer = new THREE.Vector2();
 
+        let ctrlOrbitActive = false;
+        let orbitOverrideActive = false;
+        let orbitPointer = { x: 0, y: 0 };
+        let orbitPointerId: number | null = null;
+        let panOverrideActive = false;
+        let panPointer = { x: 0, y: 0 };
+        let panPointerId: number | null = null;
+        const orbitSpherical = new THREE.Spherical();
+        const orbitOffset = new THREE.Vector3();
+        const orbitTarget = new THREE.Vector3();
+        const zoomTarget = new THREE.Vector3();
+        const zoomOffset = new THREE.Vector3();
+        const panTarget = new THREE.Vector3();
+        const panRight = new THREE.Vector3();
+        const panUp = new THREE.Vector3();
+        const panOffset = new THREE.Vector3();
+
         const applySculpt = (
+          partIndex: number,
           point: [number, number, number],
           direction: number
         ) => {
-          const positions = geometry.attributes.position;
-          const normals = geometry.attributes.normal;
+          const part = meshParts[partIndex];
+          if (!part) return;
+          const positions = part.geometry.attributes.position;
+          const normals = part.geometry.attributes.normal;
           const posArray = positions.array as Float32Array;
           const normArray = normals.array as Float32Array;
           const radius = Math.max(0.1, meshBrushRef.current);
@@ -1402,64 +2081,323 @@ export default function App() {
 
           if (changed) {
             positions.needsUpdate = true;
-            geometry.computeVertexNormals();
+            part.geometry.computeVertexNormals();
             normals.needsUpdate = true;
           }
         };
 
         const scheduleSculpt = (
+          partIndex: number,
           point: [number, number, number],
           direction: number
         ) => {
-          meshPendingRef.current = { point, direction };
+          meshPendingRef.current = { point, direction, partIndex };
           if (meshRafRef.current) return;
           meshRafRef.current = window.requestAnimationFrame(() => {
             const pending = meshPendingRef.current;
             if (pending) {
-              applySculpt(pending.point, pending.direction);
+              applySculpt(pending.partIndex, pending.point, pending.direction);
             }
             meshPendingRef.current = null;
             meshRafRef.current = 0;
           });
         };
 
+        const selectVertices = (partIndex: number, hit: any) => {
+          const part = meshParts[partIndex];
+          if (!part) return;
+          const selectionRadius =
+            (Math.max(0.5, meshSelectionRadiusRef.current) / 100) * maxDim;
+          const radiusSq = selectionRadius * selectionRadius;
+          const positions = part.geometry.attributes.position
+            .array as Float32Array;
+          const vertexCount = part.geometry.attributes.position.count;
+          const precisionPick = meshSelectionPrecisionRef.current;
+          const stride = precisionPick
+            ? 1
+            : vertexCount > 60000
+              ? Math.ceil(vertexCount / 60000)
+              : 1;
+          const indices = new Set<number>();
+          if (hit?.face) {
+            [hit.face.a, hit.face.b, hit.face.c].forEach((index: number) => {
+              if (index >= 0 && index < vertexCount) {
+                indices.add(index);
+              }
+            });
+          }
+          const px = hit.point.x;
+          const py = hit.point.y;
+          const pz = hit.point.z;
+          for (let i = 0; i < vertexCount; i += stride) {
+            const offset = i * 3;
+            const dx = positions[offset] - px;
+            const dy = positions[offset + 1] - py;
+            const dz = positions[offset + 2] - pz;
+            const distSq = dx * dx + dy * dy + dz * dz;
+            if (distSq <= radiusSq) {
+              indices.add(i);
+            }
+          }
+          if (!indices.size) {
+            clearMeshSelection();
+            return;
+          }
+          rebuildMeshSelectionOverlay(partIndex, indices);
+        };
+
         const handlePointer = (event: PointerEvent) => {
-          if (!canSculpt) return;
           const tool = meshToolRef.current;
           if (tool === "orbit") return;
+          if ((tool === "sculpt" || tool === "carve") && !canSculpt) return;
+          if (
+            (tool === "sculpt" || tool === "carve") &&
+            meshExplodeEnabledRef.current
+          ) {
+            return;
+          }
           const rect = renderer.domElement.getBoundingClientRect();
           pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
           pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
           raycaster.setFromCamera(pointer, camera);
-          const hits = raycaster.intersectObject(mesh, false);
+          const hits = raycaster.intersectObjects(
+            meshParts.map((part) => part.mesh),
+            false
+          );
           if (!hits.length) return;
           const hit = hits[0];
+          const partIndex = meshIndexMap.get(hit.object) ?? 0;
+          if (tool === "select") {
+            selectVertices(partIndex, hit);
+            return;
+          }
           const direction = tool === "carve" ? -1 : 1;
-          scheduleSculpt(
-            [hit.point.x, hit.point.y, hit.point.z],
-            direction
-          );
+          scheduleSculpt(partIndex, [hit.point.x, hit.point.y, hit.point.z], direction);
+        };
+
+        let orbitHoverActive = false;
+
+        const setOrbitHoverCursor = (enabled: boolean) => {
+          if (!orbitHoverActive) return;
+          renderer.domElement.style.cursor = enabled ? "grab" : "";
+        };
+
+        const onPointerDownCapture = (event: PointerEvent) => {
+          if (event.button !== 0) return;
+          if (!(event.shiftKey || event.ctrlKey)) return;
+          orbitOverrideActive = true;
+          controls.enabled = false;
+          meshSculptingRef.current = false;
+          orbitPointer = { x: event.clientX, y: event.clientY };
+          orbitPointerId = event.pointerId;
+          renderer.domElement.setPointerCapture(event.pointerId);
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          ctrlOrbitActive = event.ctrlKey;
+          renderer.domElement.style.cursor = event.ctrlKey ? "grabbing" : "";
+        };
+
+        const onRightPointerDownCapture = (event: PointerEvent) => {
+          if (event.button !== 2) return;
+          if (orbitOverrideActive || panOverrideActive) return;
+          panOverrideActive = true;
+          controls.enabled = false;
+          meshSculptingRef.current = false;
+          panPointer = { x: event.clientX, y: event.clientY };
+          panPointerId = event.pointerId;
+          renderer.domElement.setPointerCapture(event.pointerId);
+          renderer.domElement.style.cursor = "grabbing";
+          event.preventDefault();
+          event.stopImmediatePropagation();
         };
 
         const onPointerDown = (event: PointerEvent) => {
-          if (!canSculpt) return;
-          if (meshToolRef.current === "orbit") return;
+          const tool = meshToolRef.current;
+          if (orbitOverrideActive || panOverrideActive) return;
+          if (tool === "orbit") return;
+          if (tool === "select") {
+            handlePointer(event);
+            return;
+          }
+          if (!canSculpt || meshExplodeEnabledRef.current) return;
           meshSculptingRef.current = true;
           handlePointer(event);
         };
 
         const onPointerMove = (event: PointerEvent) => {
+          if (orbitOverrideActive) {
+            if (orbitPointerId !== null && event.pointerId !== orbitPointerId) {
+              return;
+            }
+            const element = renderer.domElement;
+            const deltaX = event.clientX - orbitPointer.x;
+            const deltaY = event.clientY - orbitPointer.y;
+            orbitPointer = { x: event.clientX, y: event.clientY };
+            const height = element.clientHeight || 1;
+            const width = element.clientWidth || 1;
+            const rotateSpeed = controls.rotateSpeed ?? 1;
+            const azimuthDelta = (2 * Math.PI * deltaX * rotateSpeed) / width;
+            const polarDelta = (2 * Math.PI * deltaY * rotateSpeed) / height;
+            if ("target" in controls && controls.target) {
+              orbitTarget.copy(controls.target);
+            } else {
+              orbitTarget.set(0, 0, 0);
+            }
+            orbitOffset.copy(camera.position).sub(orbitTarget);
+            orbitSpherical.setFromVector3(orbitOffset);
+            orbitSpherical.theta -= azimuthDelta;
+            orbitSpherical.phi -= polarDelta;
+            const EPS = 1e-6;
+            orbitSpherical.phi = Math.max(
+              EPS,
+              Math.min(Math.PI - EPS, orbitSpherical.phi)
+            );
+            orbitOffset.setFromSpherical(orbitSpherical);
+            camera.position.copy(orbitTarget).add(orbitOffset);
+            camera.lookAt(orbitTarget);
+            controls.update();
+            return;
+          }
+          if (panOverrideActive) {
+            if (panPointerId !== null && event.pointerId !== panPointerId) {
+              return;
+            }
+            const element = renderer.domElement;
+            const deltaX = event.clientX - panPointer.x;
+            const deltaY = event.clientY - panPointer.y;
+            panPointer = { x: event.clientX, y: event.clientY };
+            const height = element.clientHeight || 1;
+            if ("target" in controls && controls.target) {
+              panTarget.copy(controls.target);
+            } else {
+              panTarget.set(0, 0, 0);
+            }
+            panOffset.copy(camera.position).sub(panTarget);
+            const distance = panOffset.length() || 1;
+            const fov = (camera.fov * Math.PI) / 180;
+            const targetDistance = distance * Math.tan(fov / 2);
+            const panX = (-2 * deltaX * targetDistance) / height;
+            const panY = (2 * deltaY * targetDistance) / height;
+            camera.updateMatrix();
+            panRight.setFromMatrixColumn(camera.matrix, 0).multiplyScalar(panX);
+            panUp.setFromMatrixColumn(camera.matrix, 1).multiplyScalar(panY);
+            panOffset.copy(panRight).add(panUp);
+            camera.position.add(panOffset);
+            panTarget.add(panOffset);
+            if ("target" in controls && controls.target) {
+              controls.target.copy(panTarget);
+            }
+            camera.lookAt(panTarget);
+            controls.update();
+            return;
+          }
           if (!meshSculptingRef.current) return;
           handlePointer(event);
         };
 
-        const onPointerUp = () => {
-          meshSculptingRef.current = false;
-          meshPendingRef.current = null;
+        const onWheel = (event: WheelEvent) => {
+          if (meshToolRef.current === "orbit") return;
+          event.preventDefault();
+          const delta = event.deltaY;
+          if (!Number.isFinite(delta) || delta === 0) return;
+          const zoomIntensity = Math.min(Math.abs(delta) / 120, 6);
+          if (typeof controls.dollyIn === "function") {
+            const scale = 1 + zoomIntensity * 0.08;
+            if (delta > 0) {
+              controls.dollyOut(scale);
+            } else {
+              controls.dollyIn(scale);
+            }
+            controls.update();
+            return;
+          }
+          if ("target" in controls && controls.target) {
+            zoomTarget.copy(controls.target);
+          } else {
+            zoomTarget.set(0, 0, 0);
+          }
+          zoomOffset.copy(camera.position).sub(zoomTarget);
+          const distance = zoomOffset.length();
+          const minDistance =
+            typeof controls.minDistance === "number" ? controls.minDistance : 0.1;
+          const maxDistance =
+            typeof controls.maxDistance === "number"
+              ? controls.maxDistance
+              : maxDim * 6;
+          const step = zoomIntensity * maxDim * 0.04;
+          const nextDistance = Math.min(
+            maxDistance,
+            Math.max(minDistance, distance + (delta > 0 ? step : -step))
+          );
+          zoomOffset.setLength(nextDistance);
+          camera.position.copy(zoomTarget).add(zoomOffset);
+          camera.lookAt(zoomTarget);
+          controls.update();
         };
 
+        const onPointerUp = (event: PointerEvent) => {
+          meshSculptingRef.current = false;
+          meshPendingRef.current = null;
+          if (orbitOverrideActive) {
+            if (orbitPointerId !== null) {
+              renderer.domElement.releasePointerCapture(orbitPointerId);
+            }
+            orbitOverrideActive = false;
+            orbitPointerId = null;
+            if (ctrlOrbitActive) {
+              ctrlOrbitActive = false;
+              renderer.domElement.style.cursor = orbitHoverActive ? "grab" : "";
+            }
+            controls.enabled = meshToolRef.current === "orbit";
+          }
+          if (panOverrideActive) {
+            if (panPointerId !== null) {
+              renderer.domElement.releasePointerCapture(panPointerId);
+            }
+            panOverrideActive = false;
+            panPointerId = null;
+            renderer.domElement.style.cursor = orbitHoverActive ? "grab" : "";
+            controls.enabled = meshToolRef.current === "orbit";
+          }
+        };
+
+        const onPointerEnter = () => {
+          orbitHoverActive = true;
+          setOrbitHoverCursor(true);
+        };
+
+        const onPointerLeave = () => {
+          orbitHoverActive = false;
+          renderer.domElement.style.cursor = "";
+        };
+
+        const onKeyToggle = (event: KeyboardEvent) => {
+          if (orbitOverrideActive) return;
+          setOrbitHoverCursor(event.ctrlKey);
+        };
+
+        const onContextMenu = (event: Event) => {
+          event.preventDefault();
+        };
+
+        renderer.domElement.addEventListener(
+          "pointerdown",
+          onPointerDownCapture,
+          true
+        );
+        renderer.domElement.addEventListener(
+          "pointerdown",
+          onRightPointerDownCapture,
+          true
+        );
         renderer.domElement.addEventListener("pointerdown", onPointerDown);
         renderer.domElement.addEventListener("pointermove", onPointerMove);
+        renderer.domElement.addEventListener("pointerenter", onPointerEnter);
+        renderer.domElement.addEventListener("pointerleave", onPointerLeave);
+        renderer.domElement.addEventListener("wheel", onWheel, { passive: false });
+        renderer.domElement.addEventListener("contextmenu", onContextMenu);
+        window.addEventListener("keydown", onKeyToggle);
+        window.addEventListener("keyup", onKeyToggle);
         window.addEventListener("pointerup", onPointerUp);
 
         const resize = () => {
@@ -1492,12 +2430,50 @@ export default function App() {
           if (animationId) window.cancelAnimationFrame(animationId);
           resizeObserver?.disconnect();
           window.removeEventListener("resize", resize);
+          renderer.domElement.removeEventListener(
+            "pointerdown",
+            onPointerDownCapture,
+            true
+          );
+          renderer.domElement.removeEventListener(
+            "pointerdown",
+            onRightPointerDownCapture,
+            true
+          );
           renderer.domElement.removeEventListener("pointerdown", onPointerDown);
           renderer.domElement.removeEventListener("pointermove", onPointerMove);
+          renderer.domElement.removeEventListener("pointerenter", onPointerEnter);
+          renderer.domElement.removeEventListener("pointerleave", onPointerLeave);
+          renderer.domElement.removeEventListener("wheel", onWheel);
+          renderer.domElement.removeEventListener("contextmenu", onContextMenu);
+          window.removeEventListener("keydown", onKeyToggle);
+          window.removeEventListener("keyup", onKeyToggle);
           window.removeEventListener("pointerup", onPointerUp);
+          clearMeshSelection();
           controls.dispose();
-          geometry.dispose();
+          grid.removeFromParent();
+          grid.geometry.dispose();
+          if ("material" in grid) {
+            const gridMaterial = grid.material as any;
+            if (Array.isArray(gridMaterial)) {
+              gridMaterial.forEach((materialItem) => materialItem.dispose());
+            } else {
+              gridMaterial.dispose?.();
+            }
+          }
+          meshParts.forEach((part) => {
+            part.mesh.removeFromParent();
+            part.geometry.dispose();
+          });
+          if (overlayMesh) {
+            overlayMesh.removeFromParent();
+            overlayMesh.geometry?.dispose?.();
+          }
+          meshGroup.removeFromParent();
           material.dispose();
+          if (overlayMaterial) {
+            overlayMaterial.dispose();
+          }
           renderer.dispose();
           container.replaceChildren();
           meshStateRef.current = null;
@@ -1531,7 +2507,13 @@ export default function App() {
   }, [
     viewerMode,
     viewer3dMode,
-    uploadPath,
+    meshPrimaryPath,
+    meshOverlayPath,
+    meshOverlayIso,
+    meshOverlayStep,
+    meshOverlayOpacity,
+    meshSource,
+    meshMaskAvailable,
     meshRevision,
     buildMeshUrl,
     apiFetch,
@@ -1542,11 +2524,15 @@ export default function App() {
     const state = meshStateRef.current;
     if (!state) return;
     state.controls.enabled = meshTool === "orbit";
+    if (meshTool === "select") {
+      meshSculptingRef.current = false;
+      meshPendingRef.current = null;
+    }
   }, [meshTool]);
 
   useEffect(() => {
     if (meshCanSculpt) return;
-    if (meshTool !== "orbit") {
+    if (meshTool !== "orbit" && meshTool !== "select") {
       setMeshTool("orbit");
     }
   }, [meshCanSculpt, meshTool]);
@@ -1559,12 +2545,88 @@ export default function App() {
   }, [meshWireframe]);
 
   useEffect(() => {
+    if (meshPartCount <= 1 && meshIsolateEnabled) {
+      setMeshIsolateEnabled(false);
+    }
+  }, [meshPartCount, meshIsolateEnabled]);
+
+  useEffect(() => {
+    if (!meshPartCount) return;
+    setMeshActiveGroup((value) =>
+      Math.min(Math.max(0, value), Math.max(0, meshPartCount - 1))
+    );
+  }, [meshPartCount]);
+
+  useEffect(() => {
     const state = meshStateRef.current;
     if (!state) return;
-    const { three, material, bounds } = state;
+    state.activePartIndex = meshActiveGroup;
+  }, [meshActiveGroup]);
+
+  useEffect(() => {
+    const state = meshStateRef.current;
+    if (!state) return;
+    state.meshParts.forEach((part, index) => {
+      part.mesh.visible = !meshIsolateEnabled || index === meshActiveGroup;
+    });
+  }, [meshIsolateEnabled, meshActiveGroup, meshRevision]);
+
+  useEffect(() => {
+    const state = meshStateRef.current;
+    if (!state) return;
+    const preset = MESH_MATERIAL_PRESETS[meshMaterialPreset];
+    const material = state.material;
+    material.color.setHex(preset.color);
+    material.roughness = preset.roughness;
+    material.metalness = preset.metalness;
+    material.clearcoat = preset.clearcoat ?? 0;
+    material.clearcoatRoughness = preset.clearcoatRoughness ?? 0;
+    material.transmission = preset.transmission ?? 0;
+    material.thickness = preset.thickness ?? 0;
+    material.ior = preset.ior ?? 1.5;
+    material.sheen = preset.sheen ?? 0;
+    material.sheenColor = new state.three.Color(preset.sheenColor ?? 0x000000);
+    material.emissive = new state.three.Color(preset.emissive ?? 0x000000);
+    material.transparent = (preset.transmission ?? 0) > 0;
+    material.needsUpdate = true;
+  }, [meshMaterialPreset]);
+
+  useEffect(() => {
+    if (!meshExplodeEnabled) return;
+    if (meshTool === "sculpt" || meshTool === "carve") {
+      setMeshTool("orbit");
+    }
+    meshSculptingRef.current = false;
+  }, [meshExplodeEnabled, meshTool]);
+
+  useEffect(() => {
+    const state = meshStateRef.current;
+    if (!state) return;
+    const baseDistance = meshExplodeEnabled
+      ? meshExplodeDistance * state.maxDim * 0.6
+      : 0;
+    state.meshParts.forEach((part, index) => {
+      const offset = (meshPartOffsets[index] ?? 0) * state.maxDim * 0.45;
+      const distance = baseDistance + offset;
+      part.mesh.position.set(
+        part.direction[0] * distance,
+        part.direction[1] * distance,
+        part.direction[2] * distance
+      );
+    });
+  }, [meshExplodeEnabled, meshExplodeDistance, meshPartOffsets, meshRevision]);
+
+  useEffect(() => {
+    const state = meshStateRef.current;
+    if (!state) return;
+    const { three, material, bounds, overlayMaterial } = state;
     if (!meshClipEnabled) {
       material.clippingPlanes = [];
       material.needsUpdate = true;
+      if (overlayMaterial) {
+        overlayMaterial.clippingPlanes = [];
+        overlayMaterial.needsUpdate = true;
+      }
       return;
     }
     const plane = state.clipPlane ?? new three.Plane();
@@ -1588,6 +2650,10 @@ export default function App() {
     state.clipPlane = plane;
     material.clippingPlanes = [plane];
     material.needsUpdate = true;
+    if (overlayMaterial) {
+      overlayMaterial.clippingPlanes = [plane];
+      overlayMaterial.needsUpdate = true;
+    }
   }, [meshClipEnabled, meshClipAxis, meshClipValue]);
 
   useEffect(() => {
@@ -3942,6 +5008,7 @@ export default function App() {
                     <div className="tool-grid">
                       {([
                         { id: "orbit", label: "Orbit" },
+                        { id: "select", label: "Select" },
                         { id: "sculpt", label: "Sculpt" },
                         { id: "carve", label: "Carve" },
                       ] as Array<{ id: MeshTool; label: string }>).map(
@@ -3954,8 +5021,8 @@ export default function App() {
                             }`}
                             onClick={() => setMeshTool(tool.id)}
                             disabled={
-                              !meshCanSculpt &&
-                              (tool.id === "sculpt" || tool.id === "carve")
+                              (tool.id === "sculpt" || tool.id === "carve") &&
+                              !meshSculptEnabled
                             }
                           >
                             {tool.label}
@@ -3974,7 +5041,7 @@ export default function App() {
                           onChange={(event) =>
                             setMeshBrushSize(Number(event.target.value))
                           }
-                          disabled={!meshCanSculpt}
+                          disabled={!meshSculptEnabled || meshTool === "select"}
                         />
                       </label>
                       <strong>{meshBrushSize}px</strong>
@@ -3991,15 +5058,106 @@ export default function App() {
                           onChange={(event) =>
                             setMeshStrength(Number(event.target.value))
                           }
-                          disabled={!meshCanSculpt}
+                          disabled={!meshSculptEnabled || meshTool === "select"}
                         />
                       </label>
                       <strong>{Math.round(meshStrength * 100)}%</strong>
                     </div>
-                    {!meshCanSculpt && (
+                    <div className="mesh-selection">
+                      <div className="mesh-selection-head">
+                        <span>Selection</span>
+                        <span className="mesh-selection-count">
+                          {meshSelectionCount} voxels
+                        </span>
+                      </div>
+                      <div className="workspace-control">
+                        <label>
+                          Pick radius
+                          <input
+                            type="range"
+                            min={0.5}
+                            max={12}
+                            step={0.5}
+                            value={meshSelectionRadius}
+                            onChange={(event) =>
+                              setMeshSelectionRadius(Number(event.target.value))
+                            }
+                            disabled={meshTool !== "select"}
+                          />
+                        </label>
+                        <strong>{meshSelectionRadius.toFixed(1)}%</strong>
+                      </div>
+                      <div className="workspace-control">
+                        <label>
+                          Nudge strength
+                          <input
+                            type="range"
+                            min={0.2}
+                            max={1}
+                            step={0.05}
+                            value={meshSelectionStrength}
+                            onChange={(event) =>
+                              setMeshSelectionStrength(Number(event.target.value))
+                            }
+                            disabled={meshTool !== "select"}
+                          />
+                          </label>
+                        <strong>{Math.round(meshSelectionStrength * 100)}%</strong>
+                      </div>
+                      <label className="mesh-selection-toggle">
+                        <input
+                          type="checkbox"
+                          checked={meshSelectionPrecision}
+                          onChange={(event) =>
+                            setMeshSelectionPrecision(event.target.checked)
+                          }
+                          disabled={meshTool !== "select"}
+                        />
+                        <span>Precision pick (slower)</span>
+                      </label>
+                      {meshSelectionPrecision && meshVertexCount > 180000 && (
+                        <div className="mesh-selection-note">
+                          Precision pick can lag on dense meshes.
+                        </div>
+                      )}
+                      <div className="mesh-selection-actions">
+                        <button
+                          type="button"
+                          className="btn btn-secondary btn-small"
+                          onClick={() => nudgeMeshSelection(1)}
+                          disabled={!meshSelectionCount}
+                        >
+                          Nudge +
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-secondary btn-small"
+                          onClick={() => nudgeMeshSelection(-1)}
+                          disabled={!meshSelectionCount}
+                        >
+                          Nudge -
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-ghost btn-small"
+                          onClick={clearMeshSelection}
+                          disabled={!meshSelectionCount}
+                        >
+                          Clear
+                        </button>
+                      </div>
+                    </div>
+                    {meshExplodeEnabled && (
+                      <div className="mesh-warning mesh-warning-accent">
+                        Explode view is active. Sculpting is disabled, but selection
+                        and isolate controls still work.
+                      </div>
+                    )}
+                    {!meshCanSculpt && !meshExplodeEnabled && (
                       <div className="mesh-warning">
                         Sculpting is disabled for dense meshes. Increase the
-                        mesh step or reduce the iso complexity.
+                        mesh step or reduce the iso complexity, or use Select
+                        to isolate and nudge.
                       </div>
                     )}
                   </div>
@@ -4292,6 +5450,142 @@ export default function App() {
                           </span>
                         </label>
                         <label className="viewer-control">
+                          <span>Mesh source</span>
+                          <select
+                            value={meshSource}
+                            onChange={(event) =>
+                              setMeshSource(event.target.value as MeshSource)
+                            }
+                          >
+                            <option value="scan">Scan intensity</option>
+                            <option value="mask" disabled={!meshMaskAvailable}>
+                              Segmentation mask
+                            </option>
+                          </select>
+                          {!meshMaskAvailable && (
+                            <span className="viewer-control-note">
+                              Run a segmentation to enable mask meshes.
+                            </span>
+                          )}
+                        </label>
+                        <label className="viewer-control">
+                          <span>Tumor overlay</span>
+                          <div className="clip-toggle">
+                            <input
+                              type="checkbox"
+                              checked={meshOverlayEnabled}
+                              onChange={(event) =>
+                                setMeshOverlayEnabled(event.target.checked)
+                              }
+                              disabled={!meshMaskAvailable || meshSource === "mask"}
+                            />
+                            <span className="viewer-control-value">
+                              {meshOverlayEnabled &&
+                              meshMaskAvailable &&
+                              meshSource !== "mask"
+                                ? "On"
+                                : "Off"}
+                            </span>
+                          </div>
+                          {meshSource === "mask" && (
+                            <span className="viewer-control-note">
+                              Overlay uses the mask. Switch source to Scan to
+                              see both.
+                            </span>
+                          )}
+                        </label>
+                        {meshOverlayEnabled &&
+                          meshMaskAvailable &&
+                          meshSource !== "mask" && (
+                            <>
+                              <label className="viewer-control">
+                                <span>Tumor opacity</span>
+                                <input
+                                  type="range"
+                                  min={0.15}
+                                  max={0.9}
+                                  step={0.05}
+                                  value={meshOverlayOpacity}
+                                  onChange={(event) =>
+                                    setMeshOverlayOpacity(
+                                      Number(event.target.value)
+                                    )
+                                  }
+                                />
+                                <span className="viewer-control-value">
+                                  {Math.round(meshOverlayOpacity * 100)}%
+                                </span>
+                              </label>
+                              <label className="viewer-control">
+                                <span>Mask iso</span>
+                                <input
+                                  type="range"
+                                  min={0}
+                                  max={1}
+                                  step={0.01}
+                                  value={meshOverlayIso}
+                                  onChange={(event) =>
+                                    setMeshOverlayIso(Number(event.target.value))
+                                  }
+                                />
+                                <span className="viewer-control-value">
+                                  {meshOverlayIso.toFixed(2)}
+                                </span>
+                              </label>
+                              <label className="viewer-control">
+                                <span>Mask step</span>
+                                <input
+                                  type="range"
+                                  min={1}
+                                  max={4}
+                                  step={1}
+                                  value={meshOverlayStep}
+                                  onChange={(event) =>
+                                    setMeshOverlayStep(Number(event.target.value))
+                                  }
+                                />
+                                <span className="viewer-control-value">
+                                  {meshOverlayStep}
+                                </span>
+                              </label>
+                            </>
+                          )}
+                        <label className="viewer-control">
+                          <span>Group count</span>
+                          <input
+                            type="range"
+                            min={1}
+                            max={MAX_MESH_PARTS}
+                            step={1}
+                            value={meshGroupCount}
+                            onChange={(event) =>
+                              setMeshGroupCount(Number(event.target.value))
+                            }
+                          />
+                          <span className="viewer-control-value">
+                            {meshGroupCount}
+                          </span>
+                        </label>
+                        <label className="viewer-control">
+                          <span>Material preset</span>
+                          <select
+                            value={meshMaterialPreset}
+                            onChange={(event) =>
+                              setMeshMaterialPreset(
+                                event.target.value as MeshMaterialPreset
+                              )
+                            }
+                          >
+                            {Object.entries(MESH_MATERIAL_PRESETS).map(
+                              ([id, preset]) => (
+                                <option key={id} value={id}>
+                                  {preset.label}
+                                </option>
+                              )
+                            )}
+                          </select>
+                        </label>
+                        <label className="viewer-control">
                           <span>Wireframe</span>
                           <input
                             type="checkbox"
@@ -4335,6 +5629,109 @@ export default function App() {
                             disabled={!meshClipEnabled}
                           />
                         </label>
+                        <div className="mesh-explode">
+                          <div className="mesh-explode-head">
+                            <span>Explode view</span>
+                            <label className="mesh-explode-toggle">
+                              <input
+                                type="checkbox"
+                                checked={meshExplodeEnabled}
+                                onChange={(event) =>
+                                  setMeshExplodeEnabled(event.target.checked)
+                                }
+                              />
+                              <span>
+                                {meshExplodeEnabled ? "Active" : "Off"}
+                              </span>
+                            </label>
+                          </div>
+                          <input
+                            type="range"
+                            min={0}
+                            max={1}
+                            step={0.02}
+                            value={meshExplodeDistance}
+                            onChange={(event) =>
+                              setMeshExplodeDistance(Number(event.target.value))
+                            }
+                            disabled={!meshExplodeEnabled}
+                          />
+                          <div className="mesh-explode-meta">
+                            <span>Separation</span>
+                            <strong>
+                              {Math.round(meshExplodeDistance * 100)}%
+                            </strong>
+                          </div>
+                        </div>
+                        <div className="mesh-isolate">
+                          <div className="mesh-isolate-head">
+                            <span>Isolate part</span>
+                            <label className="mesh-explode-toggle">
+                              <input
+                                type="checkbox"
+                                checked={meshIsolateEnabled}
+                                onChange={(event) =>
+                                  setMeshIsolateEnabled(event.target.checked)
+                                }
+                                disabled={meshPartCount <= 1}
+                              />
+                              <span>
+                                {meshIsolateEnabled ? "On" : "Off"}
+                              </span>
+                            </label>
+                          </div>
+                          <div className="mesh-isolate-controls">
+                            <button
+                              type="button"
+                              className="btn btn-ghost btn-small"
+                              onClick={() => stepMeshActiveGroup(-1)}
+                              disabled={meshPartCount <= 1}
+                            >
+                              Prev
+                            </button>
+                            <span className="mesh-isolate-count">
+                              {meshPartCount ? meshActiveGroup + 1 : 0} /{" "}
+                              {meshPartCount || 1}
+                            </span>
+                            <button
+                              type="button"
+                              className="btn btn-ghost btn-small"
+                              onClick={() => stepMeshActiveGroup(1)}
+                              disabled={meshPartCount <= 1}
+                            >
+                              Next
+                            </button>
+                          </div>
+                          <div className="mesh-isolate-offset">
+                            <label>
+                              Active offset
+                              <input
+                                type="range"
+                                min={-1}
+                                max={1}
+                                step={0.05}
+                                value={activePartOffset}
+                                onChange={(event) =>
+                                  updateActivePartOffset(
+                                    Number(event.target.value)
+                                  )
+                                }
+                                disabled={!meshPartCount}
+                              />
+                            </label>
+                            <strong>
+                              {Math.round(activePartOffset * 100)}%
+                            </strong>
+                            <button
+                              type="button"
+                              className="btn btn-ghost btn-small"
+                              onClick={resetPartOffsets}
+                              disabled={!hasPartOffsets}
+                            >
+                              Reset
+                            </button>
+                          </div>
+                        </div>
                       </div>
                       {volumeInfo && volumeInfo.channels > 1 && (
                         <div className="viewer-channel">
@@ -4383,6 +5780,10 @@ export default function App() {
                         <div className="mesh-meta">
                           <span>Vertices</span>
                           <strong>{meshVertexCount.toLocaleString()}</strong>
+                        </div>
+                        <div className="mesh-meta">
+                          <span>Parts</span>
+                          <strong>{meshPartCount || 1}</strong>
                         </div>
                       </div>
                     </>
