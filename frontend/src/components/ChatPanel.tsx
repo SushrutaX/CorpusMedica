@@ -52,6 +52,11 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ isOpen, onClose, apiBase }) => {
     setIsLoading(true);
 
     try {
+      const historyPayload = [...messages, userMessage].slice(-6).map((m) => ({
+        role: m.role,
+        content: m.content,
+      }));
+
       const response = await fetch(`${apiBase}/api/chat`, {
         method: 'POST',
         headers: {
@@ -59,11 +64,8 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ isOpen, onClose, apiBase }) => {
         },
         body: JSON.stringify({
           query: userMessage.content,
-          history: messages.slice(-6).map((m) => ({
-            role: m.role,
-            content: m.content,
-          })),
-          top_k: 5,
+          history: historyPayload,
+          top_k: 4,
         }),
       });
 
@@ -278,7 +280,7 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ isOpen, onClose, apiBase }) => {
           </div>
           <div className="chat-input-footer">
             <span className="chat-input-hint">
-              <kbd>Enter</kbd> to send • <kbd>Shift+Enter</kbd> for new line
+              <kbd>Enter</kbd> to send - <kbd>Shift+Enter</kbd> for new line
             </span>
           </div>
         </div>
