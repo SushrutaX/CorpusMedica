@@ -1437,6 +1437,12 @@ body {
   color: var(--muted);
 }
 
+.viewer-control-note {
+  font-size: 0.7rem;
+  color: var(--muted);
+  opacity: 0.85;
+}
+
 .viewer-controls-stack {
   flex-direction: column;
   align-items: stretch;
@@ -1479,6 +1485,157 @@ body {
   border: 1px solid rgba(252, 211, 77, 0.4);
   color: #8a5b00;
   font-size: 0.75rem;
+}
+
+.mesh-warning-accent {
+  background: rgba(56, 189, 248, 0.12);
+  border-color: rgba(56, 189, 248, 0.4);
+  color: #0b4a6f;
+}
+
+.mesh-explode {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(125, 211, 252, 0.35);
+  background: linear-gradient(
+    140deg,
+    rgba(15, 42, 100, 0.16),
+    rgba(31, 59, 135, 0.05)
+  );
+  box-shadow: 0 0 16px rgba(14, 165, 233, 0.2);
+}
+
+.mesh-explode-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.mesh-explode-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--accent-strong);
+  cursor: pointer;
+}
+
+.mesh-explode input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
+.mesh-explode-meta {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.mesh-isolate {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(31, 59, 135, 0.18);
+  background: rgba(255, 255, 255, 0.75);
+}
+
+.mesh-isolate-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.mesh-isolate-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.mesh-isolate-count {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--accent-strong);
+}
+
+.mesh-isolate-offset {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.mesh-isolate-offset label {
+  display: grid;
+  gap: 6px;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.mesh-isolate-offset input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
+.mesh-selection {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(31, 59, 135, 0.18);
+  background: rgba(255, 255, 255, 0.85);
+  display: grid;
+  gap: 10px;
+}
+
+.mesh-selection-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.mesh-selection-count {
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent-strong);
+}
+
+.mesh-selection-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.mesh-selection-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.74rem;
+  color: var(--muted);
+}
+
+.mesh-selection-toggle input {
+  accent-color: var(--accent);
+}
+
+.mesh-selection-note {
+  font-size: 0.7rem;
+  color: var(--muted);
 }
 
 .viewer-control select {
@@ -1576,6 +1733,10 @@ body {
 .viewer-3d-mesh-sculpt,
 .viewer-3d-mesh-carve {
   cursor: crosshair;
+}
+
+.viewer-3d-mesh-select {
+  cursor: cell;
 }
 
 .viewer-3d-frame canvas {
@@ -3390,6 +3551,46 @@ body {
   background: rgba(244, 194, 122, 0.12);
   border-color: rgba(244, 194, 122, 0.4);
   color: #f4c27a;
+}
+
+.workspace-blender .mesh-warning-accent {
+  background: rgba(14, 165, 233, 0.12);
+  border-color: rgba(56, 189, 248, 0.35);
+  color: #7dd3fc;
+}
+
+.workspace-blender .mesh-explode {
+  background: rgba(12, 12, 12, 0.85);
+  border-color: rgba(59, 130, 246, 0.35);
+  box-shadow: 0 0 18px rgba(56, 189, 248, 0.2);
+}
+
+.workspace-blender .mesh-explode-toggle {
+  color: #93c5fd;
+}
+
+.workspace-blender .mesh-explode-meta {
+  color: #a9b0bf;
+}
+
+.workspace-blender .mesh-isolate,
+.workspace-blender .mesh-selection {
+  background: #1f1f1f;
+  border-color: #333;
+}
+
+.workspace-blender .mesh-isolate-count,
+.workspace-blender .mesh-selection-count {
+  color: #93c5fd;
+}
+
+.workspace-blender .mesh-isolate-offset strong {
+  color: #93c5fd;
+}
+
+.workspace-blender .mesh-selection-toggle,
+.workspace-blender .mesh-selection-note {
+  color: #a9b0bf;
 }
 
 .workspace-blender .workspace-card {

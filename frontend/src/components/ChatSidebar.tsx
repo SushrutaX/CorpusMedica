@@ -21,7 +21,7 @@ export default function ChatSidebar({ isOpen, onClose, apiBase }: ChatSidebarPro
   const [messages, setMessages] = useState<Message[]>([
     {
       role: 'assistant',
-      content: 'Hello! I\'m your AI assistant for Corpus Medica. I can help you with:\n\n• Backend and frontend code architecture\n• MONAI bundle configurations\n• Medical imaging workflows\n• Specific models in /models/bundles\n• ML and medical imaging theory\n\nWhat would you like to know?'
+      content: "Hello! I'm your AI assistant for Corpus Medica. I can help you with:\n\n- Backend and frontend code architecture\n- MONAI bundle configurations\n- Medical imaging workflows\n- Specific models in /models/bundles\n- ML and medical imaging theory\n\nWhat would you like to know?"
     }
   ]);
   const [input, setInput] = useState('');
@@ -52,6 +52,11 @@ export default function ChatSidebar({ isOpen, onClose, apiBase }: ChatSidebarPro
     setIsLoading(true);
 
     try {
+      const historyPayload = [...messages, userMessage].slice(-6).map((msg) => ({
+        role: msg.role,
+        content: msg.content
+      }));
+
       const response = await fetch(`${apiBase}/api/chat`, {
         method: 'POST',
         headers: {
@@ -59,11 +64,8 @@ export default function ChatSidebar({ isOpen, onClose, apiBase }: ChatSidebarPro
         },
         body: JSON.stringify({
           query: userMessage.content,
-          history: messages.map(msg => ({
-            role: msg.role,
-            content: msg.content
-          })),
-          top_k: 5
+          history: historyPayload,
+          top_k: 4
         })
       });
 
@@ -114,18 +116,18 @@ export default function ChatSidebar({ isOpen, onClose, apiBase }: ChatSidebarPro
         {/* Header */}
         <div className="chat-header">
           <div className="chat-header-content">
-            <div className="chat-icon">🤖</div>
+            <div className="chat-icon">AI</div>
             <div>
               <h3>AI Assistant</h3>
               <p>Corpus Medica Knowledge Base</p>
             </div>
           </div>
-          <button 
+          <button
             className="chat-close-btn"
             onClick={onClose}
             aria-label="Close chat"
           >
-            ✕
+            X
           </button>
         </div>
 
@@ -134,7 +136,7 @@ export default function ChatSidebar({ isOpen, onClose, apiBase }: ChatSidebarPro
           {messages.map((message, index) => (
             <div key={index} className={`chat-message chat-message-${message.role}`}>
               <div className="chat-message-avatar">
-                {message.role === 'user' ? '👤' : '🤖'}
+                {message.role === 'user' ? 'You' : 'AI'}
               </div>
               <div className="chat-message-content">
                 <div className="chat-message-text">
@@ -146,7 +148,7 @@ export default function ChatSidebar({ isOpen, onClose, apiBase }: ChatSidebarPro
                       className="chat-sources-toggle"
                       onClick={() => setShowSources(showSources === index ? null : index)}
                     >
-                      📚 {message.sources.length} sources
+                      Sources ({message.sources.length})
                     </button>
                     {showSources === index && (
                       <div className="chat-sources-list">
@@ -169,7 +171,7 @@ export default function ChatSidebar({ isOpen, onClose, apiBase }: ChatSidebarPro
           
           {isLoading && (
             <div className="chat-message chat-message-assistant">
-              <div className="chat-message-avatar">🤖</div>
+              <div className="chat-message-avatar">AI</div>
               <div className="chat-message-content">
                 <div className="chat-loading">
                   <span></span>
@@ -214,7 +216,7 @@ export default function ChatSidebar({ isOpen, onClose, apiBase }: ChatSidebarPro
             className="chat-send-btn"
             disabled={!input.trim() || isLoading}
           >
-            {isLoading ? '⏳' : '➤'}
+            {isLoading ? '...' : '>'}
           </button>
         </form>
       </div>

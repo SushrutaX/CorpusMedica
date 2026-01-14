@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 import os
 
@@ -13,8 +13,8 @@ class ChatMessage(BaseModel):
 
 class ChatRequest(BaseModel):
     query: str
-    history: Optional[List[ChatMessage]] = []
-    top_k: Optional[int] = 5
+    history: List[ChatMessage] = Field(default_factory=list)
+    top_k: int = Field(default=4, ge=1, le=8)
 
 
 class SourceReference(BaseModel):
@@ -25,7 +25,7 @@ class SourceReference(BaseModel):
 
 class ChatResponse(BaseModel):
     response: str
-    sources: List[SourceReference] = []
+    sources: List[SourceReference] = Field(default_factory=list)
 
 
 @router.post("/chat", response_model=ChatResponse)
@@ -43,7 +43,7 @@ async def chat(request: ChatRequest):
     if not gemini_api_key or gemini_api_key == "your_gemini_api_key_here":
         return ChatResponse(
             response=(
-                "⚠️ **Chatbot Not Configured**\n\n"
+                "Chatbot not configured.\n\n"
                 "The chatbot requires a Gemini API key to function. "
                 "Please configure your GEMINI_API_KEY in the .env file.\n\n"
                 "To set up the chatbot:\n"
@@ -92,7 +92,7 @@ async def chat(request: ChatRequest):
             return ChatResponse(
                 response=(
                     f"**Question:** {request.query}\n\n"
-                    "⚠️ **RAG Chatbot Service Not Available**\n\n"
+                    "RAG chatbot service not available.\n\n"
                     "The advanced RAG (Retrieval-Augmented Generation) chatbot service is not currently installed. "
                     "This service provides context-aware responses using your medical imaging documentation.\n\n"
                     "**To enable the full chatbot:**\n"

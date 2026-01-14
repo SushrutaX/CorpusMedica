@@ -173,12 +173,21 @@ def _resolve_upload_path(path: str) -> Path:
         target = Path(settings.upload_dir) / target
     resolved = target.resolve()
     uploads_root = Path(settings.upload_dir).resolve()
+    outputs_root = Path(settings.outputs_dir).resolve()
     try:
         allowed = resolved.is_relative_to(uploads_root)
     except AttributeError:
         allowed = str(resolved).startswith(str(uploads_root))
     if not allowed:
-        raise HTTPException(status_code=403, detail="Path is outside uploads.")
+        try:
+            allowed = resolved.is_relative_to(outputs_root)
+        except AttributeError:
+            allowed = str(resolved).startswith(str(outputs_root))
+    if not allowed:
+        raise HTTPException(
+            status_code=403,
+            detail="Path is outside uploads or outputs.",
+        )
     if not resolved.exists():
         raise HTTPException(status_code=404, detail="Upload not found.")
     return resolved
