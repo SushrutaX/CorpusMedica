@@ -13,7 +13,7 @@ services:
       - AUTH_JWT_SECRET=${AUTH_JWT_SECRET:-change-me}
       # Chatbot environment variables
       - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - QDRANT_PATH=/data/qdrant
+      - CHROMA_PATH=/data/chroma
       - GROQ_API_KEY=${GROQ_API_KEY:-}
       - GROQ_MODEL=${GROQ_MODEL:-llama-3.3-70b-versatile}
       - GROQ_FALLBACK_MODEL=${GROQ_FALLBACK_MODEL:-llama-3.1-8b-instant}
@@ -22,6 +22,7 @@ services:
       - ./chroma_db:/app/chroma_db
       - ./models:/models
       - medai_data:/data
+      - chroma_data:/data/chroma
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
   auth:
     build: ./auth_service
@@ -72,3 +73,4 @@ services:
 volumes:
   medai_data:
   auth_db:
+  chroma_data:

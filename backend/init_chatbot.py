@@ -53,7 +53,7 @@ def check_dependencies():
     
     required = [
         'google.generativeai',
-        'qdrant_client',
+        'chromadb',
         'sentence_transformers',
         'langchain',
         'fastapi',
