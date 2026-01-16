@@ -76,7 +76,9 @@ class DocumentProcessor:
             'build',
             '.next',
             'coverage',
-            '.nyc_output'
+            '.nyc_output',
+            'chroma_storage',
+            'chroma.sqlite3'
         ]
     
     def should_process_file(self, filepath: Path) -> bool:

@@ -11,8 +11,7 @@ import threading
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 import google.generativeai as genai
-from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams, PointStruct
+import chromadb
 from sentence_transformers import SentenceTransformer
 
 logger = logging.getLogger(__name__)
@@ -38,7 +37,7 @@ class RAGChatbot:
             base_path: Path to project root
             models_path: Path to models directory
             embedding_model: Name of sentence-transformers model
-            collection_name: Name of Qdrant collection
+            collection_name: Name of Chroma collection
         """
         # Setup paths
         if base_path is None:
@@ -87,11 +86,20 @@ class RAGChatbot:
         self.embedding_model = SentenceTransformer(embedding_model)
         self.embedding_dim = self.embedding_model.get_sentence_embedding_dimension()
         
-        # Initialize Qdrant
-        qdrant_path = os.getenv("QDRANT_PATH", str(self.base_path / "backend" / "qdrant_storage"))
-        logger.info(f"Initializing Qdrant at: {qdrant_path}")
-        self.client = QdrantClient(path=qdrant_path)
-        
+        # Initialize Chroma
+        chroma_path_env = os.getenv("CHROMA_PATH")
+        if chroma_path_env:
+            chroma_path = Path(chroma_path_env)
+        else:
+            chroma_db_path = self.base_path / "backend" / "chroma_db"
+            if (chroma_db_path / "chroma.sqlite3").exists():
+                chroma_path = chroma_db_path
+            else:
+                chroma_path = self.base_path / "backend" / "chroma_storage"
+        self.chroma_path = Path(chroma_path)
+        logger.info(f"Initializing Chroma at: {self.chroma_path}")
+        self.client = chromadb.PersistentClient(path=str(self.chroma_path))
+
         # Create collection if needed
         self._ensure_collection()
 
@@ -131,20 +139,12 @@ class RAGChatbot:
         return f"{trimmed}..."
     
     def _ensure_collection(self):
-        """Ensure the Qdrant collection exists."""
+        """Ensure the Chroma collection exists."""
         try:
-            collections = self.client.get_collections().collections
-            collection_names = [c.name for c in collections]
-            
-            if self.collection_name not in collection_names:
-                logger.info(f"Creating collection: {self.collection_name}")
-                self.client.create_collection(
-                    collection_name=self.collection_name,
-                    vectors_config=VectorParams(
-                        size=self.embedding_dim,
-                        distance=Distance.COSINE
-                    )
-                )
+            self.collection = self.client.get_or_create_collection(
+                name=self.collection_name,
+                metadata={"hnsw:space": "cosine"}
+            )
         except Exception as e:
             logger.error(f"Error ensuring collection: {e}")
             raise
@@ -172,7 +172,7 @@ class RAGChatbot:
     def _is_indexed(self) -> bool:
         # Check whether the vector DB already has indexed documents.
         try:
-            return self.client.count(self.collection_name).count > 0
+            return self.collection.count() > 0
         except Exception as exc:
             logger.warning("Could not check index status: %s", exc)
             return False
@@ -202,7 +202,7 @@ class RAGChatbot:
         
         # Check if already indexed
         try:
-            count = self.client.count(self.collection_name).count
+            count = self.collection.count()
             if count > 0 and not force_reindex:
                 logger.info(f"Knowledge base already indexed ({count} documents)")
                 return
@@ -296,7 +296,10 @@ class RAGChatbot:
         # Generate embeddings and upload
         if documents:
             logger.info("Generating embeddings...")
-            points = []
+            ids = []
+            embeddings = []
+            metadatas = []
+            contents = []
             
             for idx, doc in enumerate(documents):
                 if idx % 10 == 0:
@@ -304,23 +307,18 @@ class RAGChatbot:
                 
                 # Generate embedding
                 embedding = self.embedding_model.encode(doc.content).tolist()
-                
-                # Create point
-                point = PointStruct(
-                    id=idx,
-                    vector=embedding,
-                    payload={
-                        "content": doc.content,
-                        "metadata": doc.metadata
-                    }
-                )
-                points.append(point)
+                ids.append(f"{doc.doc_id}-{idx}")
+                embeddings.append(embedding)
+                metadatas.append(doc.metadata)
+                contents.append(doc.content)
             
-            # Upload to Qdrant
-            logger.info(f"Uploading {len(points)} points to Qdrant...")
-            self.client.upsert(
-                collection_name=self.collection_name,
-                points=points
+            # Upload to Chroma
+            logger.info(f"Uploading {len(ids)} points to Chroma...")
+            self.collection.add(
+                ids=ids,
+                embeddings=embeddings,
+                documents=contents,
+                metadatas=metadatas
             )
             
             logger.info("✅ Knowledge base indexing complete!")
@@ -330,7 +328,7 @@ class RAGChatbot:
             logger.info("Verification: Checking indexed documents")
             logger.info("="*60)
             
-            count = self.client.count(self.collection_name).count
+            count = self.collection.count()
             logger.info(f"Total documents in vector DB: {count}")
             
             # Test search for specific files
@@ -367,20 +365,25 @@ class RAGChatbot:
         # Generate query embedding
         query_embedding = self.embedding_model.encode(query).tolist()
         
-        # Search Qdrant
-        results = self.client.search(
-            collection_name=self.collection_name,
-            query_vector=query_embedding,
-            limit=top_k
+        # Search Chroma
+        results = self.collection.query(
+            query_embeddings=[query_embedding],
+            n_results=top_k,
+            include=["documents", "metadatas", "distances"]
         )
         
         # Format results
         documents = []
-        for result in results:
+        for content, metadata, distance in zip(
+            results.get("documents", [[]])[0],
+            results.get("metadatas", [[]])[0],
+            results.get("distances", [[]])[0]
+        ):
+            score = 1.0 - distance if distance is not None else 0.0
             documents.append({
-                "content": result.payload["content"],
-                "metadata": result.payload["metadata"],
-                "score": result.score
+                "content": content,
+                "metadata": metadata,
+                "score": score
             })
         
         return documents
@@ -438,11 +441,11 @@ You help users understand the codebase, MONAI bundles, and medical imaging workf
 Use the provided context when available. If the context section says there are no indexed sources,
 answer using general knowledge and clearly state that sources are not available yet.
 
-Response format (Markdown):
-- Answer: 3-6 sentences.
-- Steps: short bullet list when actionable.
-- Notes: risks, caveats, or assumptions.
-- Sources: list of source file paths or "None (indexing in progress)".
+Response format (plain text, you may use bullets, no markdown):
+Answer: 3-6 sentences.
+Steps: short steps in plain sentences when actionable.
+Notes: risks, caveats, or assumptions in plain sentences.
+Sources: list of source file paths or "None (indexing in progress)".
 
 Context documents:
 ---
@@ -499,7 +502,7 @@ User question: {query}
     def get_stats(self) -> Dict[str, Any]:
         """Get chatbot statistics."""
         try:
-            count = self.client.count(self.collection_name).count
+            count = self.collection.count()
             return {
                 "indexed": count > 0,
                 "documents_count": count,

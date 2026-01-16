@@ -72,7 +72,7 @@ def check_environment():
     packages = [
         'google.generativeai',
         'sentence_transformers',
-        'qdrant_client',
+        'chromadb',
         'fastapi',
         'uvicorn'
     ]
