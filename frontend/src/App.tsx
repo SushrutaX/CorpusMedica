@@ -4,7 +4,10 @@ import type {
   FormEvent,
   PointerEvent as ReactPointerEvent,
 } from "react";
+import { Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import anime from "animejs";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import ChatPanel from './components/ChatPanel';
 
 type Model = {
@@ -271,6 +274,82 @@ const API_BASE: string =
   (import.meta.env.VITE_API_BASE_URL as string) || "http://localhost:8000";
 const AUTH_BASE: string =
   (import.meta.env.VITE_AUTH_BASE_URL as string) || "http://localhost:9000";
+const DOCS_SOURCES = import.meta.glob("../../docs/**/*.md", {
+  as: "raw",
+  eager: true,
+}) as Record<string, string>;
+
+type DocsNavItem = {
+  label: string;
+  path?: string;
+  children?: DocsNavItem[];
+};
+
+const DOCS_NAV: DocsNavItem[] = [
+  { label: "Home", path: "" },
+  { label: "Getting Started", path: "getting-started" },
+  { label: "Architecture", path: "architecture" },
+  {
+    label: "Backend",
+    children: [
+      { label: "API", path: "backend/api" },
+      { label: "Segmentation", path: "backend/segmentation" },
+      { label: "Volume IO", path: "backend/volume-io" },
+      { label: "Report Analysis", path: "backend/report-analysis" },
+      { label: "Chatbot", path: "backend/chatbot" },
+    ],
+  },
+  {
+    label: "Frontend",
+    children: [
+      { label: "Overview", path: "frontend/overview" },
+      { label: "Viewers", path: "frontend/viewers" },
+      { label: "Workspace", path: "frontend/workspace" },
+    ],
+  },
+  { label: "Auth", path: "auth" },
+  { label: "Deployment", path: "deployment" },
+  { label: "Glossary", path: "glossary" },
+];
+
+const normalizeDocKey = (sourcePath: string): string => {
+  const normalized = sourcePath.replace(/\\/g, "/");
+  const marker = normalized.lastIndexOf("/docs/");
+  const relative = marker >= 0 ? normalized.slice(marker + 6) : normalized;
+  return relative.replace(/\.md$/i, "");
+};
+
+const DOCS_CONTENT = Object.entries(DOCS_SOURCES).reduce<Record<string, string>>(
+  (acc, [path, content]) => {
+    acc[normalizeDocKey(path)] = content;
+    return acc;
+  },
+  {}
+);
+
+const DOCS_ROOT_KEY = DOCS_CONTENT.README
+  ? "README"
+  : DOCS_CONTENT.index
+    ? "index"
+    : Object.keys(DOCS_CONTENT)[0];
+
+const slugifyHeading = (value: string): string =>
+  value
+    .toLowerCase()
+    .replace(/[^\w\s-]/g, "")
+    .trim()
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-");
+
+const extractHeadingText = (node: unknown): string => {
+  if (typeof node === "string") return node;
+  if (Array.isArray(node)) return node.map(extractHeadingText).join("");
+  if (node && typeof node === "object" && "props" in node) {
+    const props = (node as { props?: { children?: unknown } }).props;
+    if (props?.children) return extractHeadingText(props.children);
+  }
+  return "";
+};
 const AUTH_REQUIRED =
   ((import.meta.env.VITE_AUTH_REQUIRED as string) ?? "false") === "true";
 const AUTH_TOKEN_KEY = "medai_auth_token";
@@ -436,6 +515,8 @@ const VOLUME_COLOR_STOPS: Record<
 };
 
 export default function App() {
+  const location = useLocation();
+  const navigate = useNavigate();
   const [models, setModels] = useState<Model[]>([]);
   const [modelsLoading, setModelsLoading] = useState<boolean>(false);
   const [selectedModelId, setSelectedModelId] = useState<string>("");
@@ -446,6 +527,7 @@ export default function App() {
     return localStorage.getItem(AUTH_REFRESH_KEY) ?? "";
   });
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+  const [postAuthPath, setPostAuthPath] = useState<string>("/");
   const [authLoading, setAuthLoading] = useState<boolean>(false);
   const [authChecked, setAuthChecked] = useState<boolean>(false);
   const [authError, setAuthError] = useState<string>("");
@@ -528,6 +610,8 @@ export default function App() {
   const [meshVertexCount, setMeshVertexCount] = useState<number>(0);
   const [meshCanSculpt, setMeshCanSculpt] = useState<boolean>(true);
   const [meshRevision, setMeshRevision] = useState<number>(0);
+  const [viewerMountKey, setViewerMountKey] = useState<number>(0);
+  const [meshMountKey, setMeshMountKey] = useState<number>(0);
   const [sliceIndex, setSliceIndex] = useState<SliceIndex>({
     sagittal: 0,
     coronal: 0,
@@ -557,10 +641,7 @@ export default function App() {
   const [historyError, setHistoryError] = useState<string>("");
   const [notices, setNotices] = useState<Notice[]>([]);
   const [chatPanelOpen, setChatPanelOpen] = useState<boolean>(false);
-  const [workspacePath, setWorkspacePath] = useState<string>(() => {
-    const params = new URLSearchParams(window.location.search);
-    return params.get("path") ?? "";
-  });
+  const [workspacePath, setWorkspacePath] = useState<string>("");
   const [workspaceTool, setWorkspaceTool] =
     useState<WorkspaceTool>("brush");
   const [labels, setLabels] = useState<Label[]>(DEFAULT_LABELS);
@@ -628,6 +709,18 @@ export default function App() {
   const rightPanelRef = useRef<HTMLDivElement | null>(null);
   const loginScreenRef = useRef<HTMLDivElement | null>(null);
   const slicePrefetchRef = useRef<SliceIndex | null>(null);
+  const setViewerContainerRef = useCallback((node: HTMLDivElement | null) => {
+    if (viewerRef.current !== node) {
+      viewerRef.current = node;
+      setViewerMountKey((prev) => prev + 1);
+    }
+  }, []);
+  const setMeshContainerRef = useCallback((node: HTMLDivElement | null) => {
+    if (meshViewerRef.current !== node) {
+      meshViewerRef.current = node;
+      setMeshMountKey((prev) => prev + 1);
+    }
+  }, []);
   const dragStateRef = useRef<{
     panel: PanelId;
     offsetX: number;
@@ -644,10 +737,27 @@ export default function App() {
     corner: ResizeCorner;
   } | null>(null);
 
-  const isWorkspace = useMemo(() => {
-    const params = new URLSearchParams(window.location.search);
-    return enableViewerWorkspace && params.get("workspace") === "viewer";
-  }, [enableViewerWorkspace]);
+  const isWorkspace = useMemo(
+    () => enableViewerWorkspace && location.pathname === "/workspace",
+    [enableViewerWorkspace, location.pathname]
+  );
+
+  useEffect(() => {
+    if (!isWorkspace) return;
+    const params = new URLSearchParams(location.search);
+    const path = params.get("path") ?? "";
+    const view = params.get("view");
+    const mode = params.get("mode");
+    if (path !== workspacePath) {
+      setWorkspacePath(path);
+    }
+    if (view === "2d" || view === "3d") {
+      setViewerMode(view);
+    }
+    if (mode === "volume" || mode === "mesh") {
+      setViewer3dMode(mode);
+    }
+  }, [isWorkspace, location.search, workspacePath]);
 
   useEffect(() => {
     meshBrushRef.current = meshBrushSize;
@@ -689,16 +799,11 @@ export default function App() {
   }, [isWorkspace, viewer3dMode]);
 
   useEffect(() => {
-    if (!isWorkspace) return undefined;
-    const prevOverflow = document.body.style.overflow;
-    const prevHeight = document.body.style.height;
-    document.body.style.overflow = "hidden";
-    document.body.style.height = "100vh";
-    return () => {
-      document.body.style.overflow = prevOverflow;
-      document.body.style.height = prevHeight;
-    };
-  }, [isWorkspace]);
+    if (isWorkspace) return;
+    if (workspacePath) {
+      setWorkspacePath("");
+    }
+  }, [isWorkspace, workspacePath]);
 
   useEffect(() => {
     if (!isWorkspace) return undefined;
@@ -786,7 +891,16 @@ export default function App() {
   const isAuthenticated = Boolean(authToken && authUser);
   const authDisplayName = authUser?.email || authUser?.username || "User";
   const authRoleLabel = authUser?.role || "";
-  const showLogin = AUTH_REQUIRED && authChecked && !authUser;
+  const isAuthRoute = location.pathname.startsWith("/login");
+  const isDocsRoute = location.pathname.startsWith("/docs");
+  const authStepToPath: Record<AuthStep, string> = {
+    login: "/login",
+    "forgot-request": "/login/forgot",
+    "forgot-verify": "/login/forgot/verify",
+    "verify-request": "/login/verify",
+    "verify-confirm": "/login/verify/confirm",
+  };
+  const showLogin = (AUTH_REQUIRED && authChecked && !authUser) || isAuthRoute;
   const showAuthGate = AUTH_REQUIRED && !authChecked;
   const isAuthFlow = authStep !== "login";
   const isForgotFlow =
@@ -813,16 +927,67 @@ export default function App() {
   }, [meshTool, meshExplodeEnabled]);
 
   useEffect(() => {
-    if (!showLogin) return undefined;
-    const prevOverflow = document.body.style.overflow;
-    const prevHeight = document.body.style.height;
-    document.body.style.overflow = "hidden";
-    document.body.style.height = "100vh";
+    const shouldLock = showLogin || isWorkspace;
+    if (shouldLock) {
+      document.body.style.overflow = "hidden";
+      document.body.style.height = "100vh";
+    } else {
+      document.body.style.overflow = "";
+      document.body.style.height = "";
+    }
     return () => {
-      document.body.style.overflow = prevOverflow;
-      document.body.style.height = prevHeight;
+      document.body.style.overflow = "";
+      document.body.style.height = "";
     };
-  }, [showLogin]);
+  }, [isWorkspace, showLogin]);
+
+  const resolveAuthStepFromPath = useCallback((path: string): AuthStep => {
+    if (path === "/login/forgot") return "forgot-request";
+    if (path === "/login/forgot/verify") return "forgot-verify";
+    if (path === "/login/verify") return "verify-request";
+    if (path === "/login/verify/confirm") return "verify-confirm";
+    return "login";
+  }, []);
+
+  useEffect(() => {
+    if (!showLogin) return;
+    if (!isAuthRoute) {
+      setPostAuthPath(`${location.pathname}${location.search}`);
+      navigate("/login", { replace: true });
+      return;
+    }
+    const nextStep = resolveAuthStepFromPath(location.pathname);
+    if (nextStep !== authStep) {
+      setAuthStep(nextStep);
+    }
+  }, [
+    authStep,
+    isAuthRoute,
+    location.pathname,
+    location.search,
+    navigate,
+    resolveAuthStepFromPath,
+    showLogin,
+  ]);
+
+  useEffect(() => {
+    if (!authUser) return;
+    if (location.pathname.startsWith("/login")) {
+      navigate(postAuthPath || "/", { replace: true });
+    }
+  }, [authUser, location.pathname, navigate, postAuthPath]);
+
+  const setAuthStepAndRoute = useCallback(
+    (nextStep: AuthStep) => {
+      setAuthStep(nextStep);
+      if (!showLogin) return;
+      const targetPath = authStepToPath[nextStep];
+      if (location.pathname !== targetPath) {
+        navigate(targetPath, { replace: true });
+      }
+    },
+    [authStepToPath, location.pathname, navigate, showLogin]
+  );
 
   const resetAuthFlow = useCallback(() => {
     setForgotIdentifier("");
@@ -837,8 +1002,8 @@ export default function App() {
     setVerifyError("");
     setVerifyNotice("");
     setVerifyLoading(false);
-    setAuthStep("login");
-  }, []);
+    setAuthStepAndRoute("login");
+  }, [setAuthStepAndRoute]);
 
   const clearAuthSession = useCallback((): void => {
     localStorage.removeItem(AUTH_TOKEN_KEY);
@@ -1578,6 +1743,7 @@ export default function App() {
     viewerMode,
     viewer3dMode,
     uploadPath,
+    viewerMountKey,
     viewerChannel,
     buildVolumeFileUrl,
     apiFetch,
@@ -2514,6 +2680,7 @@ export default function App() {
     meshOverlayOpacity,
     meshSource,
     meshMaskAvailable,
+    meshMountKey,
     meshRevision,
     buildMeshUrl,
     apiFetch,
@@ -3002,7 +3169,7 @@ export default function App() {
     setAuthNotice("");
     setForgotError("");
     setForgotNotice("");
-    setAuthStep("forgot-request");
+    setAuthStepAndRoute("forgot-request");
   };
 
   const handleForgotCancel = () => {
@@ -3011,7 +3178,7 @@ export default function App() {
     setForgotOtp("");
     setForgotPassword("");
     setForgotConfirm("");
-    setAuthStep("login");
+    setAuthStepAndRoute("login");
   };
 
   const handleForgotRequest = async (event: FormEvent<HTMLFormElement>) => {
@@ -3026,7 +3193,7 @@ export default function App() {
       setForgotLoading(true);
       const detail = await requestPasswordCode(forgotIdentifier.trim());
       setForgotNotice(detail);
-      setAuthStep("forgot-verify");
+      setAuthStepAndRoute("forgot-verify");
     } catch (e: unknown) {
       const message =
         e instanceof Error ? e.message : "Unable to send the code.";
@@ -3086,7 +3253,7 @@ export default function App() {
         throw new Error(data?.detail || "Unable to reset the password.");
       }
       setAuthNotice("Password updated. Sign in with your new password.");
-      setAuthStep("login");
+      setAuthStepAndRoute("login");
       setForgotOtp("");
       setForgotPassword("");
       setForgotConfirm("");
@@ -3127,14 +3294,14 @@ export default function App() {
     setAuthNotice("");
     setVerifyError("");
     setVerifyNotice("");
-    setAuthStep("verify-request");
+    setAuthStepAndRoute("verify-request");
   };
 
   const handleVerifyCancel = () => {
     setVerifyError("");
     setVerifyNotice("");
     setVerifyOtp("");
-    setAuthStep("login");
+    setAuthStepAndRoute("login");
   };
 
   const handleVerifyRequest = async (event: FormEvent<HTMLFormElement>) => {
@@ -3150,11 +3317,11 @@ export default function App() {
       const response = await requestVerificationCode(verifyIdentifier.trim());
       if (response.already_verified) {
         setAuthNotice("Email already verified. You can sign in now.");
-        setAuthStep("login");
+        setAuthStepAndRoute("login");
         return;
       }
       setVerifyNotice(response.detail);
-      setAuthStep("verify-confirm");
+      setAuthStepAndRoute("verify-confirm");
     } catch (e: unknown) {
       const message =
         e instanceof Error ? e.message : "Unable to send the verification code.";
@@ -3176,7 +3343,7 @@ export default function App() {
       const response = await requestVerificationCode(verifyIdentifier.trim());
       if (response.already_verified) {
         setAuthNotice("Email already verified. You can sign in now.");
-        setAuthStep("login");
+        setAuthStepAndRoute("login");
         return;
       }
       setVerifyNotice(response.detail);
@@ -3214,7 +3381,7 @@ export default function App() {
         throw new Error(data?.detail || "Unable to verify the email.");
       }
       setAuthNotice("Email verified. You can sign in now.");
-      setAuthStep("login");
+      setAuthStepAndRoute("login");
       setVerifyOtp("");
       setVerifyError("");
       setVerifyNotice("");
@@ -4129,18 +4296,18 @@ export default function App() {
 
   const openWorkspace = () => {
     if (!uploadPath || !enableViewerWorkspace) return;
-    const url = new URL(window.location.href);
-    url.searchParams.set("workspace", "viewer");
-    url.searchParams.set("path", uploadPath);
-    window.open(url.toString(), "_blank", "noopener");
+    const params = new URLSearchParams();
+    params.set("path", uploadPath);
+    params.set("view", viewerMode);
+    if (viewerMode === "3d") {
+      params.set("mode", viewer3dMode);
+    }
+    navigate({ pathname: "/workspace", search: params.toString() });
   };
 
-  const backToWorkflowUrl = useMemo(() => {
-    const url = new URL(window.location.href);
-    url.searchParams.delete("workspace");
-    url.searchParams.delete("path");
-    return url.toString();
-  }, []);
+  const handleBackToWorkflow = () => {
+    navigate("/");
+  };
 
   const annotationSummary = useMemo(() => {
     const summary = { total: 0, strokes: 0, rects: 0, measures: 0 };
@@ -4186,6 +4353,517 @@ export default function App() {
       <div className="login-scanline" />
       <div className="login-noise" />
       <div className="login-vignette" />
+    </div>
+  );
+
+  const reportPanel = (
+    <section className="panel report-panel" id="report-analysis">
+      <div className="panel-head">
+        <div>
+          <h2>Report analysis</h2>
+          <p>Upload lab reports to extract values and generate insights.</p>
+        </div>
+        <span
+          className={`status-badge ${
+            reportResult ? "status-done" : reportLoading ? "status-running" : ""
+          }`}
+        >
+          {reportLoading ? "Analyzing" : reportResult ? "Complete" : "Awaiting report"}
+        </span>
+      </div>
+
+      {reportError && (
+        <div className="banner banner-error" role="alert">
+          {reportError}
+        </div>
+      )}
+      {reportNotice && (
+        <div className="banner banner-info" role="status">
+          {reportNotice}
+        </div>
+      )}
+
+      <div className="report-flow">
+        <div className={`report-step ${reportFile ? "is-done" : ""}`}>
+          <div className="report-step-title">Upload</div>
+          <div className="report-step-subtitle">
+            {reportFile ? "File ready" : "Choose file"}
+          </div>
+        </div>
+        <div
+          className={`report-step ${
+            reportLoading ? "is-active" : reportResult ? "is-done" : ""
+          }`}
+        >
+          <div className="report-step-title">Extract</div>
+          <div className="report-step-subtitle">
+            {reportLoading ? "Parsing" : reportResult ? "Complete" : "Waiting"}
+          </div>
+        </div>
+        <div className={`report-step ${reportResult ? "is-done" : ""}`}>
+          <div className="report-step-title">Assess</div>
+          <div className="report-step-subtitle">
+            {reportResult ? "Risk mapped" : "Pending"}
+          </div>
+        </div>
+        <div className={`report-step ${reportResult ? "is-done" : ""}`}>
+          <div className="report-step-title">Explain</div>
+          <div className="report-step-subtitle">
+            {reportResult ? "Narrative ready" : "Pending"}
+          </div>
+        </div>
+      </div>
+
+      {reportResult && (
+        <div className="report-summary">
+          <div className={`report-summary-card ${reportRiskClass}`}>
+            <span>Risk level</span>
+            <strong>{reportRiskLevel}</strong>
+          </div>
+          <div className="report-summary-card">
+            <span>Values extracted</span>
+            <strong>{reportStats.valueCount}</strong>
+          </div>
+          <div className="report-summary-card">
+            <span>Abnormalities</span>
+            <strong>{reportStats.abnormalCount}</strong>
+          </div>
+          <div className="report-summary-card">
+            <span>Possible symptoms</span>
+            <strong>{reportStats.symptomCount}</strong>
+          </div>
+        </div>
+      )}
+
+      <div className="report-grid">
+        <div className="report-column">
+          <div className="report-card report-card-upload">
+            <h3>Upload report</h3>
+            <p className="muted">Accepts PDF, JPG, PNG, or TXT lab reports.</p>
+            <div className="report-upload">
+              <input
+                type="file"
+                accept=".pdf,.png,.jpg,.jpeg,.txt"
+                onChange={handleReportFileChange}
+              />
+              <button
+                type="button"
+                className="btn btn-accent"
+                onClick={handleAnalyzeReport}
+                disabled={!reportFile || reportLoading}
+              >
+                {reportLoading ? "Analyzing..." : "Analyze report"}
+              </button>
+            </div>
+            {reportFile && (
+              <div className="report-file">
+                Selected: <span className="mono">{reportFile.name}</span>
+              </div>
+            )}
+          </div>
+
+          <div className="report-card report-card-values">
+            <div className="report-card-head">
+              <div>
+                <h3>Extracted values</h3>
+                {reportResult && (
+                  <p className="muted report-card-subtitle">
+                    Showing {reportFilteredValues.length} of {reportValues.length} values
+                  </p>
+                )}
+              </div>
+              <div className="report-card-tools">
+                <input
+                  type="search"
+                  className="report-search"
+                  placeholder="Search markers"
+                  value={reportValueQuery}
+                  onChange={(event) => setReportValueQuery(event.target.value)}
+                  disabled={!reportResult || reportLoading}
+                />
+                <button
+                  type="button"
+                  className={`btn btn-ghost btn-small report-filter-btn ${
+                    reportOnlyAbnormal ? "is-active" : ""
+                  }`}
+                  onClick={() => setReportOnlyAbnormal((prev) => !prev)}
+                  aria-pressed={reportOnlyAbnormal}
+                  disabled={!reportResult || reportLoading}
+                >
+                  Abnormal only
+                </button>
+              </div>
+            </div>
+            {reportLoading && (
+              <div className="skeleton-block">
+                <div className="skeleton-line wide" />
+                <div className="skeleton-line" />
+                <div className="skeleton-line short" />
+              </div>
+            )}
+            {!reportLoading && reportResult && reportValues.length > 0 && (
+              <div className="report-table">
+                <div className="report-table-head">
+                  <span>Marker</span>
+                  <span>Value</span>
+                  <span>Status</span>
+                </div>
+                {reportFilteredValues.map(([key, value]) => {
+                  const abnormal = reportAbnormalityMap.has(key);
+                  const note = reportAbnormalityMap.get(key);
+                  return (
+                    <div
+                      key={key}
+                      className={`report-table-row ${abnormal ? "is-abnormal" : ""}`}
+                    >
+                      <div className="report-table-key">{key}</div>
+                      <div className="report-table-value">{String(value)}</div>
+                      <div className="report-table-flag">
+                        {abnormal ? (
+                          <span className="report-flag report-flag-abnormal">
+                            {note || "Abnormal"}
+                          </span>
+                        ) : (
+                          <span className="report-flag report-flag-normal">Normal</span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            {!reportLoading &&
+              reportResult &&
+              reportValues.length > 0 &&
+              reportFilteredValues.length === 0 && (
+                <p className="muted">No values match the current filter.</p>
+              )}
+            {!reportLoading && reportResult && reportValues.length === 0 && (
+              <p className="muted">No structured values detected.</p>
+            )}
+            {!reportLoading && !reportResult && (
+              <p className="muted">Upload a report to see extracted values.</p>
+            )}
+          </div>
+        </div>
+
+        <div className="report-column">
+          <div className="report-card report-card-risk">
+            <h3>Risk summary</h3>
+            {reportResult ? (
+              <>
+                <div className="report-highlights">
+                  <span className={`report-pill ${reportRiskClass}`}>
+                    Risk: {reportResult.risk_analysis.risk_level}
+                  </span>
+                  <span
+                    className={`report-pill ${
+                      reportStats.abnormalCount ? "report-pill-alert" : "report-pill-soft"
+                    }`}
+                  >
+                    {reportStats.abnormalCount} abnormalities
+                  </span>
+                  <span className="report-pill report-pill-soft">
+                    {reportStats.symptomCount} symptoms
+                  </span>
+                </div>
+                {reportAbnormalities.length > 0 ? (
+                  <div className="report-group">
+                    <strong>Abnormalities</strong>
+                    <div className="report-pill-grid">
+                      {reportAbnormalities.map(([key, value]) => (
+                        <span key={key} className="report-pill report-pill-alert">
+                          {key}: {value}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <p className="muted">No abnormalities detected.</p>
+                )}
+                {reportResult.risk_analysis.explanations.length > 0 && (
+                  <div className="report-group">
+                    <strong>Notes</strong>
+                    <div className="report-callout-stack">
+                      {reportResult.risk_analysis.explanations.map((item) => (
+                        <p key={item} className="report-callout">
+                          {item}
+                        </p>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {reportResult.risk_analysis.possible_symptoms.length > 0 && (
+                  <div className="report-group">
+                    <strong>Possible symptoms</strong>
+                    <div className="report-pill-grid">
+                      {reportResult.risk_analysis.possible_symptoms.map((item) => (
+                        <span key={item} className="report-pill report-pill-soft">
+                          {item}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {reportResult.risk_analysis.disclaimer && (
+                  <p className="report-callout report-callout-muted">
+                    {reportResult.risk_analysis.disclaimer}
+                  </p>
+                )}
+              </>
+            ) : (
+              <p className="muted">Upload a report to see risk assessment details.</p>
+            )}
+          </div>
+
+          <div className="report-card report-card-wide">
+            <h3>Groq explanation</h3>
+            {reportLoading && (
+              <div className="skeleton-block">
+                <div className="skeleton-line wide" />
+                <div className="skeleton-line" />
+                <div className="skeleton-line short" />
+              </div>
+            )}
+            {!reportLoading && reportResult && (
+              <div className="report-explanation-block">
+                <p className="report-explanation">{reportResult.llm_explanation}</p>
+              </div>
+            )}
+            {!reportLoading && !reportResult && (
+              <p className="muted">
+                Groq explanations appear after a successful analysis.
+              </p>
+            )}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+
+  const reportPage = (
+    <>
+      <header className="hero page-hero">
+        <div className="hero-copy">
+          <span className="pill">Clinical report intelligence</span>
+          <h1 className="hero-title">
+            Report <span>Analysis</span>
+          </h1>
+          <p className="lead">
+            Upload lab reports, extract biomarkers, and surface risks in a structured view.
+          </p>
+          <div className="hero-meta">
+            <div className="meta-chip">PDF, image, or TXT supported</div>
+            <div className="meta-chip">Risk + narrative output</div>
+          </div>
+        </div>
+        <div className="hero-card">
+          <div className="hero-metric">
+            <span>Latest status</span>
+            <strong>
+              {reportLoading ? "Analyzing" : reportResult ? "Complete" : "Idle"}
+            </strong>
+          </div>
+          <div className="hero-metric">
+            <span>Values extracted</span>
+            <strong>{reportStats.valueCount}</strong>
+          </div>
+          <div className="hero-metric">
+            <span>Risk level</span>
+            <strong>{reportResult?.risk_analysis.risk_level ?? "n/a"}</strong>
+          </div>
+        </div>
+      </header>
+      {reportPanel}
+    </>
+  );
+
+  const docsPath = useMemo(() => {
+    const raw = location.pathname.replace(/^\/docs\/?/, "").replace(/\/$/, "");
+    return raw || "";
+  }, [location.pathname]);
+  const docsKey = docsPath || DOCS_ROOT_KEY;
+  const docsContent =
+    DOCS_CONTENT[docsKey] || DOCS_CONTENT[DOCS_ROOT_KEY] || "# Documentation";
+
+  const MIN_DOCS_CENTER_WIDTH = 720;
+  const MAX_DOCS_CENTER_WIDTH = 1100;
+  const docsPageRef = useRef<HTMLDivElement>(null);
+  const docsResizeRef = useRef<{
+    startX: number;
+    startWidth: number;
+    edge: "left" | "right";
+    pointerId: number;
+  } | null>(null);
+  const [docsCenterWidth, setDocsCenterWidth] = useState(860);
+
+  const clampDocsCenterWidth = useCallback((width: number) => {
+    const containerWidth = docsPageRef.current?.clientWidth ?? 0;
+    const maxByLayout =
+      containerWidth > 0
+        ? containerWidth - 200 - 160
+        : MAX_DOCS_CENTER_WIDTH;
+    const maxWidth = Math.max(
+      MIN_DOCS_CENTER_WIDTH,
+      Math.min(MAX_DOCS_CENTER_WIDTH, maxByLayout)
+    );
+    return Math.min(maxWidth, Math.max(MIN_DOCS_CENTER_WIDTH, width));
+  }, []);
+
+  const beginDocsResize = useCallback(
+    (edge: "right") => (event: React.PointerEvent<HTMLDivElement>) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      event.currentTarget.setPointerCapture(event.pointerId);
+      docsResizeRef.current = {
+        startX: event.clientX,
+        startWidth: docsCenterWidth,
+        edge,
+        pointerId: event.pointerId,
+      };
+    },
+    [docsCenterWidth]
+  );
+
+  const handleDocsResizeMove = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      const state = docsResizeRef.current;
+      if (!state || state.pointerId !== event.pointerId) return;
+      const delta = event.clientX - state.startX;
+      const nextWidth = state.startWidth + delta;
+      setDocsCenterWidth(clampDocsCenterWidth(nextWidth));
+    },
+    [clampDocsCenterWidth]
+  );
+
+  const endDocsResize = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    const state = docsResizeRef.current;
+    if (!state || state.pointerId !== event.pointerId) return;
+    docsResizeRef.current = null;
+    try {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    } catch {
+      // ignore release errors
+    }
+  }, []);
+
+  useEffect(() => {
+    const handleResize = () => {
+      setDocsCenterWidth((width) => clampDocsCenterWidth(width));
+    };
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, [clampDocsCenterWidth]);
+
+  const docsHeadings = useMemo(() => {
+    const lines = docsContent.split("\n");
+    return lines
+      .map((line) => {
+        const match = /^(#{2,3})\s+(.+)$/.exec(line.trim());
+        if (!match) return null;
+        const level = match[1].length;
+        const title = match[2].replace(/\s+#+$/, "").trim();
+        return {
+          level,
+          title,
+          id: slugifyHeading(title),
+        };
+      })
+      .filter(Boolean) as Array<{ level: number; title: string; id: string }>;
+  }, [docsContent]);
+
+  const renderDocsNav = (items: DocsNavItem[]) => (
+    <ul className="docs-nav-list">
+      {items.map((item) => {
+        const linkPath = item.path ?? "";
+        const href = `/docs/${linkPath}`.replace(/\/$/, "");
+        const isActive =
+          (!docsPath && linkPath === "") || docsPath === linkPath;
+        return (
+          <li key={`${item.label}-${linkPath}`}>
+            {item.path !== undefined ? (
+              <Link
+                className={`docs-nav-link ${isActive ? "active" : ""}`}
+                to={href || "/docs"}
+              >
+                {item.label}
+              </Link>
+            ) : (
+              <span className="docs-nav-heading">{item.label}</span>
+            )}
+            {item.children && renderDocsNav(item.children)}
+          </li>
+        );
+      })}
+    </ul>
+  );
+
+  const docsPage = (
+    <div
+      className="docs-page docs-theme"
+      ref={docsPageRef}
+      style={
+        {
+          "--docs-center-width": `${docsCenterWidth}px`,
+        } as React.CSSProperties
+      }
+    >
+      <aside className="docs-nav">
+        <div className="docs-nav-title">Documentation</div>
+        {renderDocsNav(DOCS_NAV)}
+      </aside>
+      <main className="docs-main">
+        <div
+          className="docs-resize-handle docs-resize-handle-right"
+          onPointerDown={beginDocsResize("right")}
+          onPointerMove={handleDocsResizeMove}
+          onPointerUp={endDocsResize}
+          onPointerCancel={endDocsResize}
+          aria-label="Resize docs panel"
+          role="separator"
+        />
+        <div className="docs-breadcrumbs">
+          <span>Learn Corpus Medica</span>
+          <span className="docs-breadcrumb-sep">›</span>
+          <strong>{docsKey.replace(/(^|\/)(\w)/g, (_m, sep, c) => `${sep}${c.toUpperCase()}`)}</strong>
+        </div>
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          components={{
+            h2: ({ children }) => {
+              const text = extractHeadingText(children);
+              const id = slugifyHeading(text);
+              return <h2 id={id}>{children}</h2>;
+            },
+            h3: ({ children }) => {
+              const text = extractHeadingText(children);
+              const id = slugifyHeading(text);
+              return <h3 id={id}>{children}</h3>;
+            },
+            h4: ({ children }) => {
+              const text = extractHeadingText(children);
+              const id = slugifyHeading(text);
+              return <h4 id={id}>{children}</h4>;
+            },
+          }}
+        >
+          {docsContent}
+        </ReactMarkdown>
+      </main>
+      <aside className="docs-toc">
+        <div className="docs-toc-title">On this page</div>
+        {docsHeadings.length > 0 ? (
+          <ul className="docs-toc-list">
+            {docsHeadings.map((heading) => (
+              <li key={heading.id} className={`level-${heading.level}`}>
+                <a href={`#${heading.id}`}>{heading.title}</a>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="docs-toc-empty">No sections detected.</p>
+        )}
+      </aside>
     </div>
   );
 
@@ -4703,9 +5381,13 @@ export default function App() {
               >
                 {uploading ? "Uploading..." : "Upload"}
               </button>
-              <a className="btn btn-ghost btn-small" href={backToWorkflowUrl}>
+              <button
+                type="button"
+                className="btn btn-ghost btn-small"
+                onClick={handleBackToWorkflow}
+              >
                 Back
-              </a>
+              </button>
             </div>
           </div>
         </div>
@@ -4849,12 +5531,15 @@ export default function App() {
                 <div className="viewer-3d">
                   <div className="viewer-3d-frame">
                     {viewer3dMode === "volume" && (
-                      <div className="viewer-3d-canvas" ref={viewerRef} />
+                      <div
+                        className="viewer-3d-canvas"
+                        ref={setViewerContainerRef}
+                      />
                     )}
                     {viewer3dMode === "mesh" && (
                       <div
                         className={`viewer-3d-canvas viewer-3d-mesh viewer-3d-mesh-${meshTool}`}
-                        ref={meshViewerRef}
+                        ref={setMeshContainerRef}
                       />
                     )}
                     {viewer3dMode === "volume" && viewer3dLoading && (
@@ -5923,29 +6608,59 @@ export default function App() {
   }
 
   return (
-    <div className="app">
+    <div className={`app-shell ${isDocsRoute ? "docs-shell" : ""}`}>
       <div className="ambient" aria-hidden="true" />
-      <div className="topbar">
-        <div className="topbar-brand">
-          <span>Corpus Medica</span>
-          <span className="topbar-tag">Medical AI workspace</span>
-        </div>
-        {authUser && (
-          <div className="topbar-actions">
-            <div className="auth-chip">
-              <span className="role">{authRoleLabel}</span>
-              <span className="name">{authDisplayName}</span>
-            </div>
-            <button
-              type="button"
-              className="btn btn-ghost btn-small"
-              onClick={handleLogout}
-            >
-              Sign out
-            </button>
+      <div className={`topbar topbar-full ${isDocsRoute ? "topbar-compact topbar-docs" : ""}`}>
+        <div className="topbar-inner">
+          <div className="topbar-brand">
+            <span>Corpus Medica</span>
+            <span className="topbar-tag">Medical AI workspace</span>
           </div>
-        )}
+          <nav className="topbar-nav" aria-label="Primary">
+            <Link
+              className={`topbar-link ${location.pathname === "/" ? "active" : ""}`}
+              to="/"
+            >
+              Overview
+            </Link>
+            <Link
+              className={`topbar-link ${location.pathname === "/reports" ? "active" : ""}`}
+              to="/reports"
+            >
+              Report analysis
+            </Link>
+            <Link
+              className={`topbar-link topbar-link-docs ${
+                location.pathname.startsWith("/docs") ? "active" : ""
+              }`}
+              to="/docs"
+            >
+              Docs
+            </Link>
+          </nav>
+          {authUser && (
+            <div className="topbar-actions">
+              <div className="auth-chip">
+                <span className="role">{authRoleLabel}</span>
+                <span className="name">{authDisplayName}</span>
+              </div>
+              <button
+                type="button"
+                className="btn btn-ghost btn-small"
+                onClick={handleLogout}
+              >
+                Sign out
+              </button>
+            </div>
+          )}
+        </div>
       </div>
+      <div className={`app ${isDocsRoute ? "app-full" : ""}`} id="top">
+      <Routes>
+        <Route
+          path="/"
+          element={
+            <>
       <header className="hero">
         <div className="hero-copy">
           <span className="pill">Open source - modular - model agnostic</span>
@@ -6371,7 +7086,10 @@ export default function App() {
             {viewerMode === "3d" && (
               <div className="viewer-3d">
                 <div className="viewer-3d-frame">
-                  <div className="viewer-3d-canvas" ref={viewerRef} />
+                  <div
+                    className="viewer-3d-canvas"
+                    ref={setViewerContainerRef}
+                  />
                   {viewer3dLoading && (
                     <div className="viewer-3d-loading">
                       Loading volume...
@@ -6618,320 +7336,10 @@ export default function App() {
         )}
       </section>
 
-      <section className="panel report-panel">
-        <div className="panel-head">
-          <div>
-            <h2>5. Report analysis</h2>
-            <p>Upload lab reports to extract values and generate insights.</p>
-          </div>
-          <span
-            className={`status-badge ${
-              reportResult ? "status-done" : reportLoading ? "status-running" : ""
-            }`}
-          >
-            {reportLoading
-              ? "Analyzing"
-              : reportResult
-              ? "Complete"
-              : "Awaiting report"}
-          </span>
-        </div>
-
-        {reportError && (
-          <div className="banner banner-error" role="alert">
-            {reportError}
-          </div>
-        )}
-        {reportNotice && (
-          <div className="banner banner-info" role="status">
-            {reportNotice}
-          </div>
-        )}
-
-        <div className="report-flow">
-          <div className={`report-step ${reportFile ? "is-done" : ""}`}>
-            <div className="report-step-title">Upload</div>
-            <div className="report-step-subtitle">
-              {reportFile ? "File ready" : "Choose file"}
-            </div>
-          </div>
-          <div
-            className={`report-step ${
-              reportLoading ? "is-active" : reportResult ? "is-done" : ""
-            }`}
-          >
-            <div className="report-step-title">Extract</div>
-            <div className="report-step-subtitle">
-              {reportLoading ? "Parsing" : reportResult ? "Complete" : "Waiting"}
-            </div>
-          </div>
-          <div className={`report-step ${reportResult ? "is-done" : ""}`}>
-            <div className="report-step-title">Assess</div>
-            <div className="report-step-subtitle">
-              {reportResult ? "Risk mapped" : "Pending"}
-            </div>
-          </div>
-          <div className={`report-step ${reportResult ? "is-done" : ""}`}>
-            <div className="report-step-title">Explain</div>
-            <div className="report-step-subtitle">
-              {reportResult ? "Narrative ready" : "Pending"}
-            </div>
-          </div>
-        </div>
-
-        {reportResult && (
-          <div className="report-summary">
-            <div className={`report-summary-card ${reportRiskClass}`}>
-              <span>Risk level</span>
-              <strong>{reportRiskLevel}</strong>
-            </div>
-            <div className="report-summary-card">
-              <span>Values extracted</span>
-              <strong>{reportStats.valueCount}</strong>
-            </div>
-            <div className="report-summary-card">
-              <span>Abnormalities</span>
-              <strong>{reportStats.abnormalCount}</strong>
-            </div>
-            <div className="report-summary-card">
-              <span>Possible symptoms</span>
-              <strong>{reportStats.symptomCount}</strong>
-            </div>
-          </div>
-        )}
-
-        <div className="report-grid">
-          <div className="report-column">
-            <div className="report-card report-card-upload">
-              <h3>Upload report</h3>
-              <p className="muted">
-                Accepts PDF, JPG, PNG, or TXT lab reports.
-              </p>
-              <div className="report-upload">
-                <input
-                  type="file"
-                  accept=".pdf,.png,.jpg,.jpeg,.txt"
-                  onChange={handleReportFileChange}
-                />
-                <button
-                  type="button"
-                  className="btn btn-accent"
-                  onClick={handleAnalyzeReport}
-                  disabled={!reportFile || reportLoading}
-                >
-                  {reportLoading ? "Analyzing..." : "Analyze report"}
-                </button>
-              </div>
-              {reportFile && (
-                <div className="report-file">
-                  Selected: <span className="mono">{reportFile.name}</span>
-                </div>
-              )}
-            </div>
-
-            <div className="report-card report-card-values">
-              <div className="report-card-head">
-                <div>
-                  <h3>Extracted values</h3>
-                  {reportResult && (
-                    <p className="muted report-card-subtitle">
-                      Showing {reportFilteredValues.length} of{" "}
-                      {reportValues.length} values
-                    </p>
-                  )}
-                </div>
-                <div className="report-card-tools">
-                  <input
-                    type="search"
-                    className="report-search"
-                    placeholder="Search markers"
-                    value={reportValueQuery}
-                    onChange={(event) =>
-                      setReportValueQuery(event.target.value)
-                    }
-                    disabled={!reportResult || reportLoading}
-                  />
-                  <button
-                    type="button"
-                    className={`btn btn-ghost btn-small report-filter-btn ${
-                      reportOnlyAbnormal ? "is-active" : ""
-                    }`}
-                    onClick={() => setReportOnlyAbnormal((prev) => !prev)}
-                    aria-pressed={reportOnlyAbnormal}
-                    disabled={!reportResult || reportLoading}
-                  >
-                    Abnormal only
-                  </button>
-                </div>
-              </div>
-              {reportLoading && (
-                <div className="skeleton-block">
-                  <div className="skeleton-line wide" />
-                  <div className="skeleton-line" />
-                  <div className="skeleton-line short" />
-                </div>
-              )}
-              {!reportLoading && reportResult && reportValues.length > 0 && (
-                <div className="report-table">
-                  <div className="report-table-head">
-                    <span>Marker</span>
-                    <span>Value</span>
-                    <span>Status</span>
-                  </div>
-                  {reportFilteredValues.map(([key, value]) => {
-                    const abnormal = reportAbnormalityMap.has(key);
-                    const note = reportAbnormalityMap.get(key);
-                    return (
-                      <div
-                        key={key}
-                        className={`report-table-row ${
-                          abnormal ? "is-abnormal" : ""
-                        }`}
-                      >
-                        <div className="report-table-key">{key}</div>
-                        <div className="report-table-value">
-                          {String(value)}
-                        </div>
-                        <div className="report-table-flag">
-                          {abnormal ? (
-                            <span className="report-flag report-flag-abnormal">
-                              {note || "Abnormal"}
-                            </span>
-                          ) : (
-                            <span className="report-flag report-flag-normal">
-                              Normal
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-              {!reportLoading &&
-                reportResult &&
-                reportValues.length > 0 &&
-                reportFilteredValues.length === 0 && (
-                  <p className="muted">
-                    No values match the current filter.
-                  </p>
-                )}
-              {!reportLoading && reportResult && reportValues.length === 0 && (
-                <p className="muted">No structured values detected.</p>
-              )}
-              {!reportLoading && !reportResult && (
-                <p className="muted">
-                  Upload a report to see extracted values.
-                </p>
-              )}
-            </div>
-          </div>
-
-          <div className="report-column">
-            <div className="report-card report-card-risk">
-              <h3>Risk summary</h3>
-              {reportResult ? (
-                <>
-                  <div className="report-highlights">
-                    <span className={`report-pill ${reportRiskClass}`}>
-                      Risk: {reportResult.risk_analysis.risk_level}
-                    </span>
-                    <span
-                      className={`report-pill ${
-                        reportStats.abnormalCount
-                          ? "report-pill-alert"
-                          : "report-pill-soft"
-                      }`}
-                    >
-                      {reportStats.abnormalCount} abnormalities
-                    </span>
-                    <span className="report-pill report-pill-soft">
-                      {reportStats.symptomCount} symptoms
-                    </span>
-                  </div>
-                  {reportAbnormalities.length > 0 ? (
-                    <div className="report-group">
-                      <strong>Abnormalities</strong>
-                      <div className="report-pill-grid">
-                        {reportAbnormalities.map(([key, value]) => (
-                          <span key={key} className="report-pill report-pill-alert">
-                            {key}: {value}
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                  ) : (
-                    <p className="muted">No abnormalities detected.</p>
-                  )}
-                  {reportResult.risk_analysis.explanations.length > 0 && (
-                    <div className="report-group">
-                      <strong>Notes</strong>
-                      <div className="report-callout-stack">
-                        {reportResult.risk_analysis.explanations.map((item) => (
-                          <p key={item} className="report-callout">
-                            {item}
-                          </p>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                  {reportResult.risk_analysis.possible_symptoms.length > 0 && (
-                    <div className="report-group">
-                      <strong>Possible symptoms</strong>
-                      <div className="report-pill-grid">
-                        {reportResult.risk_analysis.possible_symptoms.map(
-                          (item) => (
-                            <span key={item} className="report-pill report-pill-soft">
-                              {item}
-                            </span>
-                          )
-                        )}
-                      </div>
-                    </div>
-                  )}
-                  {reportResult.risk_analysis.disclaimer && (
-                    <p className="report-callout report-callout-muted">
-                      {reportResult.risk_analysis.disclaimer}
-                    </p>
-                  )}
-                </>
-              ) : (
-                <p className="muted">
-                  Upload a report to see risk assessment details.
-                </p>
-              )}
-            </div>
-
-            <div className="report-card report-card-wide">
-              <h3>Groq explanation</h3>
-              {reportLoading && (
-                <div className="skeleton-block">
-                  <div className="skeleton-line wide" />
-                  <div className="skeleton-line" />
-                  <div className="skeleton-line short" />
-                </div>
-              )}
-              {!reportLoading && reportResult && (
-                <div className="report-explanation-block">
-                  <p className="report-explanation">
-                    {reportResult.llm_explanation}
-                  </p>
-                </div>
-              )}
-              {!reportLoading && !reportResult && (
-                <p className="muted">
-                  Groq explanations appear after a successful analysis.
-                </p>
-              )}
-            </div>
-          </div>
-        </div>
-      </section>
-
       <section className="panel history-panel">
         <div className="panel-head">
           <div>
-            <h2>6. Recent jobs</h2>
+            <h2>5. Recent jobs</h2>
             <p>Completed runs stored in this workspace.</p>
           </div>
           <button
@@ -7032,9 +7440,14 @@ export default function App() {
         )}
       </section>
 
-      <footer className="footer">
-        <p>For research and decision support only. Not medical diagnosis.</p>
-      </footer>
+            </>
+          }
+        />
+        <Route path="/reports" element={reportPage} />
+        <Route path="/docs/*" element={docsPage} />
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+      </div>
 
       <div className="toast-stack" aria-live="polite">
         {notices.map((notice) => (
