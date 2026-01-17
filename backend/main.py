@@ -28,6 +28,7 @@ app.add_middleware(
         "/api/chat",
         "/api/chat/health",
         "/api/chat/stats",
+        "/api/uploads",
         "/docs",
         "/openapi.json",
     ],
