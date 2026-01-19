@@ -40,6 +40,13 @@ type UploadBatchResponse = {
 
 type UploadResponse = UploadSingleResponse | UploadBatchResponse;
 
+type WorkspaceUploadItem = {
+  path: string;
+  label: string;
+  kind: string;
+  createdAt: string;
+};
+
 type SegmentResponse = {
   job_id: string;
 };
@@ -642,6 +649,10 @@ export default function App() {
   const [notices, setNotices] = useState<Notice[]>([]);
   const [chatPanelOpen, setChatPanelOpen] = useState<boolean>(false);
   const [workspacePath, setWorkspacePath] = useState<string>("");
+  const [workspaceUploads, setWorkspaceUploads] = useState<
+    WorkspaceUploadItem[]
+  >([]);
+  const [activeWorkspaceIndex, setActiveWorkspaceIndex] = useState<number>(0);
   const [workspaceTool, setWorkspaceTool] =
     useState<WorkspaceTool>("brush");
   const [labels, setLabels] = useState<Label[]>(DEFAULT_LABELS);
@@ -705,6 +716,7 @@ export default function App() {
     coronal: null,
     axial: null,
   });
+  const workspaceShellRef = useRef<HTMLDivElement | null>(null);
   const leftPanelRef = useRef<HTMLDivElement | null>(null);
   const rightPanelRef = useRef<HTMLDivElement | null>(null);
   const loginScreenRef = useRef<HTMLDivElement | null>(null);
@@ -720,6 +732,14 @@ export default function App() {
       meshViewerRef.current = node;
       setMeshMountKey((prev) => prev + 1);
     }
+  }, []);
+  const getWorkspaceBounds = useCallback(() => {
+    const shell = workspaceShellRef.current;
+    if (!shell) {
+      return { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
+    }
+    const rect = shell.getBoundingClientRect();
+    return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
   }, []);
   const dragStateRef = useRef<{
     panel: PanelId;
@@ -809,7 +829,8 @@ export default function App() {
     if (!isWorkspace) return undefined;
     const updatePositions = () => {
       const rightWidth = panelSizes.right.width;
-      const maxX = Math.max(16, window.innerWidth - rightWidth - 16);
+      const bounds = getWorkspaceBounds();
+      const maxX = Math.max(16, bounds.width - rightWidth - 16);
       setPanelPositions((prev) => ({
         left: prev.left,
         right: {
@@ -823,15 +844,16 @@ export default function App() {
     return () => {
       window.removeEventListener("resize", updatePositions);
     };
-  }, [isWorkspace, panelSizes.right.width]);
+  }, [getWorkspaceBounds, isWorkspace, panelSizes.right.width]);
 
   useEffect(() => {
     if (!isWorkspace) return;
     const clamp = (pos: PanelPosition, size: PanelSize) => {
+      const bounds = getWorkspaceBounds();
       const minX = 8;
-      const minY = 56;
-      const maxX = Math.max(minX, window.innerWidth - size.width - 8);
-      const maxY = Math.max(minY, window.innerHeight - size.height - 8);
+      const minY = 8;
+      const maxX = Math.max(minX, bounds.width - size.width - 8);
+      const maxY = Math.max(minY, bounds.height - size.height - 8);
       return {
         x: Math.min(maxX, Math.max(minX, pos.x)),
         y: Math.min(maxY, Math.max(minY, pos.y)),
@@ -841,7 +863,7 @@ export default function App() {
       left: clamp(prev.left, panelSizes.left),
       right: clamp(prev.right, panelSizes.right),
     }));
-  }, [isWorkspace, panelSizes]);
+  }, [getWorkspaceBounds, isWorkspace, panelSizes]);
 
   const selectedModel = useMemo(
     () => models.find((model) => model.id === selectedModelId) || null,
@@ -2983,7 +3005,7 @@ export default function App() {
   }, [selectedFileCount, selectedFileNames]);
   const selectionWarning = useMemo(() => {
     if (selectedFileCount <= 1) return "";
-    if (selectionKinds.includes("zip")) {
+    if (selectionKinds.includes("zip") && !isWorkspace) {
       return "Zip files must be uploaded one at a time.";
     }
     if (selectionKinds.includes("unknown")) {
@@ -2993,7 +3015,7 @@ export default function App() {
       return "Do not mix NIfTI and DICOM files in the same batch.";
     }
     return "";
-  }, [selectedFileCount, selectionKinds]);
+  }, [isWorkspace, selectedFileCount, selectionKinds]);
 
   const axisSizes = useMemo(() => {
     if (!volumeInfo) return null;
@@ -3060,15 +3082,18 @@ export default function App() {
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
     const selected = Array.from(event.target.files ?? []);
     setFiles(selected);
-    setUploadResult(null);
-    setUploadPreview(null);
-    setVolumeInfo(null);
     setViewerError("");
-    setJobId("");
-    setJobStatus(null);
-    setJobResult(null);
-    if (workspacePath) {
-      setWorkspacePath("");
+    setError("");
+    if (!isWorkspace) {
+      setUploadResult(null);
+      setUploadPreview(null);
+      setVolumeInfo(null);
+      setJobId("");
+      setJobStatus(null);
+      setJobResult(null);
+      if (workspacePath) {
+        setWorkspacePath("");
+      }
     }
     if (selected.length > 0) {
       const name =
@@ -3410,35 +3435,98 @@ export default function App() {
       setError("");
       setUploading(true);
 
-      const form = new FormData();
-      if (files.length === 1) {
-        form.append("file", files[0]);
+      const isZipSelection = selectionKinds.includes("zip");
+      const workspaceItems: WorkspaceUploadItem[] = [];
+      let lastUploadedPath = "";
+
+      const pushWorkspaceItem = (path: string, label: string, kind: string) => {
+        workspaceItems.push({
+          path,
+          label,
+          kind,
+          createdAt: new Date().toISOString(),
+        });
+      };
+
+      if (isZipSelection && files.length > 1) {
+        for (const file of files) {
+          const form = new FormData();
+          form.append("file", file);
+          const res = await apiFetch(`${API_BASE}/api/uploads`, {
+            method: "POST",
+            body: form,
+          });
+          if (!res.ok) throw new Error(`Upload failed (${res.status})`);
+          const data = (await res.json()) as UploadResponse;
+          const savedPath = "saved_path" in data ? data.saved_path : "";
+          if (savedPath) {
+            pushWorkspaceItem(savedPath, file.name, data.kind ?? "zip");
+            lastUploadedPath = savedPath;
+          }
+        }
       } else {
-        files.forEach((item) => form.append("files", item));
+        const form = new FormData();
+        if (files.length === 1) {
+          form.append("file", files[0]);
+        } else {
+          files.forEach((item) => form.append("files", item));
+        }
+
+        const endpoint =
+          files.length === 1 ? "/api/uploads" : "/api/uploads/batch";
+        const res = await apiFetch(`${API_BASE}${endpoint}`, {
+          method: "POST",
+          body: form,
+        });
+
+        if (!res.ok) throw new Error(`Upload failed (${res.status})`);
+
+        const data = (await res.json()) as UploadResponse;
+        const savedPath = "saved_path" in data ? data.saved_path : "";
+        if (savedPath) {
+          const label =
+            files.length === 1 ? files[0].name : `${files.length} files`;
+          pushWorkspaceItem(savedPath, label, data.kind ?? "batch");
+          lastUploadedPath = savedPath;
+        }
+
+        if (!isWorkspace) {
+          setUploadResult(data);
+        }
       }
 
-      const endpoint = files.length === 1 ? "/api/uploads" : "/api/uploads/batch";
-      const res = await apiFetch(`${API_BASE}${endpoint}`, {
-        method: "POST",
-        body: form,
-      });
+      if (isWorkspace) {
+        if (workspaceItems.length > 0) {
+          setWorkspaceUploads((prev) => {
+            const next = [
+              ...workspaceItems,
+              ...prev.filter(
+                (item) => !workspaceItems.some((entry) => entry.path === item.path)
+              ),
+            ];
+            return next;
+          });
+          const nextPath = workspaceItems[0].path;
+          setWorkspacePath(nextPath);
+          setActiveWorkspaceIndex(0);
+        }
+        setUploadPreview(null);
+        pushNotice("success", "Upload complete", "Scan saved successfully.");
+        return;
+      }
 
-      if (!res.ok) throw new Error(`Upload failed (${res.status})`);
-
-      const data = (await res.json()) as UploadResponse;
-      setUploadResult(data);
       setUploadPreview(null);
       pushNotice("success", "Upload complete", "Scan saved successfully.");
 
-      const savedPath = "saved_path" in data ? data.saved_path : "";
-      if (savedPath) {
+      const nextPath = workspaceItems[0]?.path || lastUploadedPath;
+      if (nextPath) {
         const previewRes = await apiFetch(
-          `${API_BASE}/api/uploads/preview?path=${encodeURIComponent(savedPath)}`
+          `${API_BASE}/api/uploads/preview?path=${encodeURIComponent(nextPath)}`
         );
         if (previewRes.ok) {
           const preview = (await previewRes.json()) as UploadPreview;
           setUploadPreview(preview);
-          setPreviewPath(savedPath);
+          setPreviewPath(nextPath);
         }
       }
     } catch (e: unknown) {
@@ -3861,22 +3949,23 @@ export default function App() {
     const onMove = (event: PointerEvent) => {
       const state = dragStateRef.current;
       if (!state) return;
+      const bounds = getWorkspaceBounds();
       const panelEl =
         state.panel === "left" ? leftPanelRef.current : rightPanelRef.current;
       const panelWidth = panelEl?.offsetWidth ?? panelSizes[state.panel].width;
       const panelHeight =
         panelEl?.offsetHeight ?? panelSizes[state.panel].height;
       const minX = 8;
-      const minY = 56;
-      const maxX = Math.max(minX, window.innerWidth - panelWidth - 8);
-      const maxY = Math.max(minY, window.innerHeight - panelHeight - 8);
+      const minY = 8;
+      const maxX = Math.max(minX, bounds.width - panelWidth - 8);
+      const maxY = Math.max(minY, bounds.height - panelHeight - 8);
       const nextX = Math.min(
         maxX,
-        Math.max(minX, event.clientX - state.offsetX)
+        Math.max(minX, event.clientX - state.offsetX - bounds.left)
       );
       const nextY = Math.min(
         maxY,
-        Math.max(minY, event.clientY - state.offsetY)
+        Math.max(minY, event.clientY - state.offsetY - bounds.top)
       );
       const snap = 18;
       const snappedX =
@@ -3906,17 +3995,18 @@ export default function App() {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
     };
-  }, [draggingPanel, panelSizes]);
+  }, [draggingPanel, getWorkspaceBounds, panelSizes]);
 
   useEffect(() => {
     if (!resizingPanel) return undefined;
     const onMove = (event: PointerEvent) => {
       const state = resizeStateRef.current;
       if (!state) return;
+      const bounds = getWorkspaceBounds();
       const minWidth = 220;
-      const maxWidth = Math.min(520, window.innerWidth - 40);
+      const maxWidth = Math.min(520, bounds.width - 40);
       const minHeight = 240;
-      const maxHeight = Math.min(760, window.innerHeight - 120);
+      const maxHeight = Math.min(760, bounds.height - 40);
       const dx = event.clientX - state.startX;
       const dy = event.clientY - state.startY;
       let nextWidth = state.startWidth;
@@ -3959,9 +4049,9 @@ export default function App() {
       }
 
       const minX = 8;
-      const minY = 56;
-      const maxX = Math.max(minX, window.innerWidth - nextWidth - 8);
-      const maxY = Math.max(minY, window.innerHeight - nextHeight - 8);
+      const minY = 8;
+      const maxX = Math.max(minX, bounds.width - nextWidth - 8);
+      const maxY = Math.max(minY, bounds.height - nextHeight - 8);
       nextX = Math.min(maxX, Math.max(minX, nextX));
       nextY = Math.min(maxY, Math.max(minY, nextY));
 
@@ -3984,7 +4074,7 @@ export default function App() {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
     };
-  }, [resizingPanel]);
+  }, [getWorkspaceBounds, resizingPanel]);
 
   const renderOverlay = useCallback(
     (axis: AxisKey) => {
@@ -4304,6 +4394,35 @@ export default function App() {
     }
     navigate({ pathname: "/workspace", search: params.toString() });
   };
+
+  const selectWorkspaceUpload = useCallback(
+    (index: number) => {
+      const item = workspaceUploads[index];
+      if (!item) return;
+      setActiveWorkspaceIndex(index);
+      setWorkspacePath(item.path);
+      if (isWorkspace) {
+        const params = new URLSearchParams();
+        params.set("path", item.path);
+        params.set("view", viewerMode);
+        if (viewerMode === "3d") {
+          params.set("mode", viewer3dMode);
+        }
+        navigate({ pathname: "/workspace", search: params.toString() }, { replace: true });
+      }
+    },
+    [isWorkspace, navigate, viewer3dMode, viewerMode, workspaceUploads]
+  );
+
+  useEffect(() => {
+    if (!workspacePath) return;
+    const index = workspaceUploads.findIndex(
+      (item) => item.path === workspacePath
+    );
+    if (index >= 0 && index !== activeWorkspaceIndex) {
+      setActiveWorkspaceIndex(index);
+    }
+  }, [activeWorkspaceIndex, workspacePath, workspaceUploads]);
 
   const handleBackToWorkflow = () => {
     navigate("/");
@@ -5377,7 +5496,7 @@ export default function App() {
                 type="button"
                 className="btn btn-accent btn-small"
                 onClick={handleUpload}
-                disabled={uploading || files.length === 0}
+                disabled={uploading || files.length === 0 || Boolean(selectionWarning)}
               >
                 {uploading ? "Uploading..." : "Upload"}
               </button>
@@ -5392,7 +5511,7 @@ export default function App() {
           </div>
         </div>
 
-        <div className="workspace-shell">
+        <div className="workspace-shell" ref={workspaceShellRef}>
           <main className="workspace-viewport">
             <div className="viewport-header">
               <div>
@@ -5893,6 +6012,31 @@ export default function App() {
                 Properties
               </div>
               <div className="workspace-float-content">
+                <div className="workspace-card">
+                  <h3>Workspace files</h3>
+                  {workspaceUploads.length === 0 ? (
+                    <p className="muted">No uploads yet. Add files to begin.</p>
+                  ) : (
+                    <div className="workspace-file-list">
+                      {workspaceUploads.map((item, index) => {
+                        const isActive = item.path === workspacePath;
+                        return (
+                          <button
+                            key={item.path}
+                            type="button"
+                            className={`workspace-file ${isActive ? "active" : ""}`}
+                            onClick={() => selectWorkspaceUpload(index)}
+                          >
+                            <span className="workspace-file-name">{item.label}</span>
+                            <span className="workspace-file-meta">
+                              {item.kind.toUpperCase()}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
                 {enable3DViewer && (
                   <div className="workspace-card">
                     <h3>View mode</h3>
