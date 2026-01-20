@@ -60,6 +60,13 @@ def _prune_cache(cache: Dict[str, Tuple[Path, float]]) -> None:
         shutil.rmtree(path, ignore_errors=True)
 
 
+def _is_empty_file(path: Path) -> bool:
+    try:
+        return path.exists() and path.stat().st_size == 0
+    except OSError:
+        return False
+
+
 def _ensure_zip_extracted(path: Path) -> Path:
     cache_key = _cache_key_for_path(path)
     with _CACHE_LOCK:
@@ -129,7 +136,10 @@ def _ensure_uncompressed_nifti(path: Path) -> Path:
     out_path = cached / "volume.nii"
     sentinel = cached / ".complete"
     if sentinel.exists() and out_path.exists():
-        return out_path
+        if _is_empty_file(out_path):
+            shutil.rmtree(cached, ignore_errors=True)
+        else:
+            return out_path
 
     shutil.rmtree(cached, ignore_errors=True)
     cached.mkdir(parents=True, exist_ok=True)
@@ -139,6 +149,9 @@ def _ensure_uncompressed_nifti(path: Path) -> Path:
     except Exception as exc:
         shutil.rmtree(cached, ignore_errors=True)
         raise ValueError("Failed to prepare volume for fast slicing.") from exc
+    if _is_empty_file(out_path):
+        shutil.rmtree(cached, ignore_errors=True)
+        raise ValueError("Extracted volume is empty. Re-upload the file.")
 
     sentinel.touch()
     return out_path
@@ -233,6 +246,8 @@ def _convert_dicom_to_nifti(dicom_dir: Path, output_dir: Path) -> Path:
 
 
 def _load_single_nifti(path: Path) -> Tuple[np.ndarray, List[float]]:
+    if _is_empty_file(path):
+        raise ValueError("NIfTI file is empty. Re-upload the file.")
     image = nib.load(str(path))
     data = image.get_fdata().astype(np.float32)
     if data.ndim == 4 and data.shape[-1] == 1:
@@ -353,6 +368,8 @@ def _slice_from_nifti(
     path: Path, axis_index: int, index: int, channel: int
 ) -> np.ndarray:
     target_path = _ensure_uncompressed_nifti(path)
+    if _is_empty_file(target_path):
+        raise ValueError("NIfTI cache is empty. Re-upload the file.")
     image = nib.load(str(target_path))
     shape = image.shape
     if len(shape) < 3 or len(shape) > 4:

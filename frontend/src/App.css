@@ -3515,7 +3515,8 @@ body {
   background: #1f1f1f;
   color: #d7dbe3;
   position: relative;
-  display: block;
+  display: flex;
+  flex-direction: column;
 }
 
 .workspace-blender .ambient {
@@ -3527,16 +3528,13 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 10px 16px;
+  padding: 6px 12px;
   background: #2a2a2a;
   border-bottom: 1px solid #343434;
 }
 
 .workspace-blender .workspace-topbar {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
+  position: relative;
   z-index: 8;
 }
 
@@ -3562,8 +3560,8 @@ body {
   border: none;
   background: transparent;
   color: #cfd5df;
-  font-size: 0.8rem;
-  padding: 6px 8px;
+  font-size: 0.78rem;
+  padding: 4px 6px;
   border-radius: 6px;
   cursor: pointer;
 }
@@ -3623,7 +3621,7 @@ body {
 .workspace-top-actions {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   flex-wrap: wrap;
 }
 
@@ -3681,18 +3679,21 @@ body {
   min-height: 0;
   background: #0b0b0b;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 .workspace-blender .workspace-shell {
-  position: absolute;
-  inset: 0;
+  position: relative;
+  inset: auto;
 }
 
 .workspace-viewport {
-  position: absolute;
-  inset: 0;
+  position: relative;
+  inset: auto;
   display: flex;
   flex-direction: column;
+  flex: 1;
   min-height: 0;
   background: #0b0b0b;
 }
@@ -4053,6 +4054,48 @@ body {
   background: #232323;
   border: 1px solid #343434;
   box-shadow: none;
+}
+
+.workspace-file-list {
+  display: grid;
+  gap: 10px;
+}
+
+.workspace-file {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(10, 10, 10, 0.6);
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.workspace-file:hover {
+  border-color: rgba(99, 132, 255, 0.35);
+  background: rgba(20, 20, 20, 0.8);
+}
+
+.workspace-file.active {
+  border-color: rgba(99, 132, 255, 0.7);
+  background: rgba(40, 60, 120, 0.35);
+  color: #f5f7ff;
+}
+
+.workspace-file-name {
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.workspace-file-meta {
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #9aa4b5;
 }
 
 .workspace-blender .tool-button {
