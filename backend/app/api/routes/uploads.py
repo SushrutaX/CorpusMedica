@@ -792,6 +792,21 @@ def volume_mesh(
     label: Optional[int] = Query(
         None, description="Optional label value to extract."
     ),
+    vessel: bool = Query(
+        False, description="Apply vesselness filter before mesh extraction."
+    ),
+    vessel_threshold: Optional[float] = Query(
+        None, ge=0.0, le=1.0, description="Vesselness threshold (0-1)."
+    ),
+    vessel_sigma_min: float = Query(
+        1.0, ge=0.5, le=6.0, description="Vesselness minimum sigma."
+    ),
+    vessel_sigma_max: float = Query(
+        3.0, ge=1.0, le=10.0, description="Vesselness maximum sigma."
+    ),
+    vessel_step: int = Query(
+        3, ge=1, le=6, description="Downsample step for vesselness."
+    ),
 ):
     resolved = _resolve_upload_path(path)
     try:
@@ -809,9 +824,41 @@ def volume_mesh(
     if label is not None:
         volume = (volume == label).astype(np.float32)
         iso = 0.5
+        vessel = False
+
+    mesh_step = step
+    if vessel:
+        try:
+            from skimage.filters import frangi
+        except Exception as exc:
+            raise HTTPException(
+                status_code=500,
+                detail="Vesselness dependency missing.",
+            ) from exc
+
+        downsample = max(step, vessel_step)
+        if downsample > 1:
+            volume = volume[::downsample, ::downsample, ::downsample]
+            zooms = [float(item) * downsample for item in zooms]
+        volume = volume.astype(np.float32, copy=False)
+        vmin = float(np.nanmin(volume))
+        vmax = float(np.nanmax(volume))
+        if vmax > vmin:
+            volume = (volume - vmin) / (vmax - vmin)
+        sigmas = np.linspace(vessel_sigma_min, vessel_sigma_max, num=3)
+        vesselness = frangi(volume, sigmas=sigmas, black_ridges=False)
+        vesselness = np.nan_to_num(vesselness, nan=0.0, posinf=0.0, neginf=0.0)
+        if vessel_threshold is None:
+            vessel_threshold = float(np.percentile(vesselness, 98))
+        mask = vesselness >= vessel_threshold
+        volume = mask.astype(np.float32)
+        iso = 0.5
+        mesh_step = 1
 
     try:
-        vertices, faces, normals = _mesh_from_volume(volume, zooms, iso, step)
+        vertices, faces, normals = _mesh_from_volume(
+            volume, zooms, iso, mesh_step
+        )
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
     except Exception as exc:
