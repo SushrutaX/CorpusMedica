@@ -2063,6 +2063,19 @@ body {
   color: var(--muted);
 }
 
+.mesh-selection-label {
+  display: grid;
+  gap: 4px;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.mesh-selection-label strong {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--ink);
+}
+
 .mesh-selection-count {
   font-size: 0.7rem;
   font-weight: 600;
@@ -2179,6 +2192,26 @@ body {
 .viewer-3d-canvas {
   position: absolute;
   inset: 0;
+  z-index: 1;
+}
+
+.mesh-hybrid-shell {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+}
+
+.mesh-hybrid-layer {
+  position: absolute;
+  inset: 0;
+}
+
+.mesh-hybrid-layer-volume {
+  z-index: 0;
+  pointer-events: none;
+}
+
+.mesh-hybrid-layer-mesh {
   z-index: 1;
 }
 
@@ -4045,6 +4078,10 @@ body {
   color: #93c5fd;
 }
 
+.workspace-blender .mesh-selection-label strong {
+  color: #e2e8f0;
+}
+
 .workspace-blender .mesh-selection-toggle,
 .workspace-blender .mesh-selection-note {
   color: #a9b0bf;
@@ -4061,6 +4098,13 @@ body {
   gap: 10px;
 }
 
+.workspace-file-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+}
+
 .workspace-file {
   display: flex;
   align-items: center;
@@ -4073,6 +4117,7 @@ body {
   color: inherit;
   cursor: pointer;
   text-align: left;
+  width: 100%;
 }
 
 .workspace-file:hover {
@@ -4096,6 +4141,150 @@ body {
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: #9aa4b5;
+}
+
+.workspace-file-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-end;
+}
+
+.workspace-file-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.7rem;
+  color: #9aa4b5;
+}
+
+.workspace-file-toggle input {
+  accent-color: #6ea8ff;
+}
+
+.workspace-card-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.mesh-overlay-count {
+  font-size: 0.75rem;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(99, 132, 255, 0.2);
+  color: #cfe0ff;
+}
+
+.workspace-dropzone {
+  border-radius: 12px;
+  border: 1px dashed rgba(255, 255, 255, 0.18);
+  background: rgba(10, 10, 10, 0.45);
+  padding: 12px;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.workspace-dropzone input[type="file"] {
+  display: none;
+}
+
+.workspace-dropzone label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  cursor: pointer;
+  color: #cbd5e1;
+}
+
+.workspace-dropzone .dropzone-title {
+  font-size: 0.9rem;
+  color: #f8fafc;
+}
+
+.workspace-dropzone .dropzone-subtitle {
+  font-size: 0.75rem;
+  color: #94a3b8;
+}
+
+.workspace-dropzone.is-active {
+  border-color: rgba(99, 132, 255, 0.6);
+  box-shadow: 0 0 18px rgba(56, 189, 248, 0.2);
+}
+
+.mesh-overlay-list {
+  display: grid;
+  gap: 12px;
+}
+
+.mesh-overlay-item {
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 10px;
+  background: rgba(14, 14, 14, 0.7);
+  display: grid;
+  gap: 10px;
+}
+
+.mesh-overlay-item.is-active {
+  border-color: rgba(99, 132, 255, 0.65);
+  box-shadow: 0 0 18px rgba(99, 132, 255, 0.2);
+}
+
+.mesh-overlay-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.chip-active {
+  background: rgba(99, 132, 255, 0.2);
+  color: #e0e7ff;
+  border: 1px solid rgba(99, 132, 255, 0.5);
+}
+
+.mesh-overlay-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: #f8fafc;
+  font-size: 0.85rem;
+}
+
+.mesh-overlay-controls {
+  display: grid;
+  gap: 8px;
+  font-size: 0.75rem;
+  color: #aeb6c4;
+}
+
+.mesh-overlay-controls label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.mesh-overlay-controls select,
+.mesh-overlay-controls input[type="range"] {
+  background: #1c1c1c;
+  border: 1px solid #2f2f2f;
+  color: #e2e8f0;
+  border-radius: 8px;
+  padding: 4px 6px;
+}
+
+.mesh-overlay-controls input[type="range"] {
+  width: 120px;
+}
+
+.mesh-overlay-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.75rem;
+  color: #cbd5f5;
 }
 
 .workspace-blender .tool-button {

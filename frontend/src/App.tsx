@@ -1,14 +1,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   ChangeEvent,
+  DragEvent as ReactDragEvent,
   FormEvent,
   PointerEvent as ReactPointerEvent,
 } from "react";
-import { Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import {
+  Link,
+  Navigate,
+  Route,
+  Routes,
+  useLocation,
+  useNavigate,
+} from "react-router-dom";
 import anime from "animejs";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import ChatPanel from './components/ChatPanel';
+import ChatPanel from "./components/ChatPanel";
+import DocsPage from "./pages/DocsPage";
+import WorkspacePage from "./pages/WorkspacePage";
 
 type Model = {
   id: string;
@@ -45,7 +53,15 @@ type WorkspaceUploadItem = {
   label: string;
   kind: string;
   createdAt: string;
+  visible: boolean;
+  position?: [number, number, number];
+  rotation?: [number, number, number];
 };
+
+type WorkspaceUploadCacheItem = Pick<
+  WorkspaceUploadItem,
+  "path" | "label" | "kind" | "createdAt" | "visible" | "position" | "rotation"
+>;
 
 type SegmentResponse = {
   job_id: string;
@@ -152,7 +168,7 @@ type SliceIndex = Record<AxisKey, number>;
 
 type ViewerMode = "2d" | "3d";
 type Viewer3DMode = "volume" | "mesh";
-type MeshTool = "orbit" | "sculpt" | "carve" | "select";
+type MeshTool = "orbit" | "sculpt" | "carve" | "select" | "label";
 type MeshMaterialPreset =
   | "brain"
   | "bone"
@@ -180,8 +196,137 @@ type MeshBounds = {
   max: [number, number, number];
 };
 
+type OverlayMaterialPreset = "brain" | "bone" | "muscle" | "vessel";
+type OverlayLayer = "overlay" | "underlay";
+
+type MeshOverlayItem = {
+  id: string;
+  path: string;
+  label: string;
+  materialPreset: OverlayMaterialPreset;
+  opacity: number;
+  visible: boolean;
+  renderMode: "volume" | "mesh";
+  layer: OverlayLayer;
+  position?: [number, number, number];
+  rotation?: [number, number, number];
+  clipEnabled?: boolean;
+  clipAxis?: ClipAxis;
+  clipValue?: number;
+  explodeEnabled?: boolean;
+  explodeDistance?: number;
+};
+
+type MeshOverlayCacheItem = {
+  id: string;
+  path: string;
+  label: string;
+  materialPreset: OverlayMaterialPreset;
+  opacity: number;
+  visible: boolean;
+  renderMode: "volume" | "mesh";
+  position?: [number, number, number];
+  rotation?: [number, number, number];
+  clipEnabled?: boolean;
+  clipAxis?: ClipAxis;
+  clipValue?: number;
+  explodeEnabled?: boolean;
+  explodeDistance?: number;
+};
+
+type WorkspaceSettingsCache = {
+  viewerMode?: ViewerMode;
+  viewer3dMode?: Viewer3DMode;
+  sliceColormap?: SliceColorMap;
+  volumeColormap?: VolumeColorMap;
+  volumeOpacity?: number;
+  clipEnabled?: boolean;
+  clipAxis?: ClipAxis;
+  clipValue?: number;
+  meshTool?: MeshTool;
+  meshIso?: number;
+  meshStep?: number;
+  meshSource?: MeshSource;
+  meshOpacity?: number;
+  meshVolumeEnabled?: boolean;
+  meshVolumeOpacity?: number;
+  meshVolumeColormap?: VolumeColorMap;
+  meshVesselEnabled?: boolean;
+  meshVesselThreshold?: number;
+  meshVesselSigmaMin?: number;
+  meshVesselSigmaMax?: number;
+  meshVesselStep?: number;
+  meshOverlayEnabled?: boolean;
+  meshOverlayOpacity?: number;
+  meshOverlayIso?: number;
+  meshOverlayStep?: number;
+  meshOverlayLockEnabled?: boolean;
+  meshOverlayLockTarget?: string;
+  meshWireframe?: boolean;
+  meshClipEnabled?: boolean;
+  meshClipAxis?: ClipAxis;
+  meshClipValue?: number;
+  meshExplodeEnabled?: boolean;
+  meshExplodeDistance?: number;
+  meshMaterialPreset?: MeshMaterialPreset;
+  meshGroupCount?: number;
+  meshSelectionRadius?: number;
+  meshSelectionStrength?: number;
+  meshSelectionPrecision?: boolean;
+  meshLabelEnabled?: boolean;
+  overlayOpacity?: number;
+  workspaceTool?: WorkspaceTool;
+  brushSize?: number;
+};
+
+type MeshOverlayVolume = {
+  id: string;
+  path: string;
+  volume: any;
+  mapper: any;
+  ctfun: any;
+  ofun: any;
+  dataRange: [number, number];
+  dimensions: [number, number, number];
+  spacing: [number, number, number];
+  materialPreset: OverlayMaterialPreset;
+  opacity: number;
+  visible: boolean;
+  layer: OverlayLayer;
+  position?: [number, number, number];
+  rotation?: [number, number, number];
+  clipEnabled?: boolean;
+  clipAxis?: ClipAxis;
+  clipValue?: number;
+  clipPlane?: any | null;
+  explodeEnabled?: boolean;
+  explodeDistance?: number;
+};
+
+type OverviewCache = {
+  uploadResult?: UploadResponse;
+  uploadPreview?: UploadPreview;
+  previewPath?: string;
+  volumeInfo?: VolumeInfo;
+  sliceIndex?: SliceIndex;
+  sliceRequestIndex?: SliceIndex;
+  viewerChannel?: number;
+  viewerMode?: ViewerMode;
+  viewer3dMode?: Viewer3DMode;
+  sliceColormap?: SliceColorMap;
+  volumeColormap?: VolumeColorMap;
+  volumeOpacity?: number;
+  clipEnabled?: boolean;
+  clipAxis?: ClipAxis;
+  clipValue?: number;
+  selectedModelId?: string;
+};
+
 type MeshViewerState = {
   three: any;
+  plyLoader?: new () => {
+    parse: (data: ArrayBuffer) => any;
+  };
   renderer: any;
   scene: any;
   camera: any;
@@ -192,8 +337,37 @@ type MeshViewerState = {
   material: any;
   overlayMesh?: any;
   overlayMaterial?: any;
+  overlayStackGroup?: any;
+  overlayStackMeshes?: Map<
+    string,
+    {
+      mesh: any;
+      material: any;
+      path: string;
+      materialPreset: OverlayMaterialPreset;
+      opacity: number;
+      visible: boolean;
+      iso: number;
+      step: number;
+      channel: number;
+      layer: OverlayLayer;
+      position?: [number, number, number];
+      rotation?: [number, number, number];
+      direction?: [number, number, number];
+      clipEnabled?: boolean;
+      clipAxis?: ClipAxis;
+      clipValue?: number;
+      explodeEnabled?: boolean;
+      explodeDistance?: number;
+    }
+  >;
+  labelGroup?: any;
+  labelLine?: any;
+  labelSprite?: any;
+  labelPartIndex?: number;
   clipPlane: any | null;
   bounds: MeshBounds;
+  centerOffset: [number, number, number];
   maxDim: number;
   activePartIndex: number;
   selection?: MeshSelection;
@@ -275,92 +449,22 @@ type Viewer3DState = {
   dimensions: number[];
   spacing: number[];
   clipPlane: any | null;
+  overlayVolumes?: Map<string, MeshOverlayVolume>;
+  overlayLoader?: (item: MeshOverlayItem) => Promise<MeshOverlayVolume>;
 };
 
 const API_BASE: string =
   (import.meta.env.VITE_API_BASE_URL as string) || "http://localhost:8000";
 const AUTH_BASE: string =
   (import.meta.env.VITE_AUTH_BASE_URL as string) || "http://localhost:9000";
-const DOCS_SOURCES = import.meta.glob("../../docs/**/*.md", {
-  as: "raw",
-  eager: true,
-}) as Record<string, string>;
-
-type DocsNavItem = {
-  label: string;
-  path?: string;
-  children?: DocsNavItem[];
-};
-
-const DOCS_NAV: DocsNavItem[] = [
-  { label: "Home", path: "" },
-  { label: "Getting Started", path: "getting-started" },
-  { label: "Architecture", path: "architecture" },
-  {
-    label: "Backend",
-    children: [
-      { label: "API", path: "backend/api" },
-      { label: "Segmentation", path: "backend/segmentation" },
-      { label: "Volume IO", path: "backend/volume-io" },
-      { label: "Report Analysis", path: "backend/report-analysis" },
-      { label: "Chatbot", path: "backend/chatbot" },
-    ],
-  },
-  {
-    label: "Frontend",
-    children: [
-      { label: "Overview", path: "frontend/overview" },
-      { label: "Viewers", path: "frontend/viewers" },
-      { label: "Workspace", path: "frontend/workspace" },
-    ],
-  },
-  { label: "Auth", path: "auth" },
-  { label: "Deployment", path: "deployment" },
-  { label: "Glossary", path: "glossary" },
-];
-
-const normalizeDocKey = (sourcePath: string): string => {
-  const normalized = sourcePath.replace(/\\/g, "/");
-  const marker = normalized.lastIndexOf("/docs/");
-  const relative = marker >= 0 ? normalized.slice(marker + 6) : normalized;
-  return relative.replace(/\.md$/i, "");
-};
-
-const DOCS_CONTENT = Object.entries(DOCS_SOURCES).reduce<Record<string, string>>(
-  (acc, [path, content]) => {
-    acc[normalizeDocKey(path)] = content;
-    return acc;
-  },
-  {}
-);
-
-const DOCS_ROOT_KEY = DOCS_CONTENT.README
-  ? "README"
-  : DOCS_CONTENT.index
-    ? "index"
-    : Object.keys(DOCS_CONTENT)[0];
-
-const slugifyHeading = (value: string): string =>
-  value
-    .toLowerCase()
-    .replace(/[^\w\s-]/g, "")
-    .trim()
-    .replace(/\s+/g, "-")
-    .replace(/-+/g, "-");
-
-const extractHeadingText = (node: unknown): string => {
-  if (typeof node === "string") return node;
-  if (Array.isArray(node)) return node.map(extractHeadingText).join("");
-  if (node && typeof node === "object" && "props" in node) {
-    const props = (node as { props?: { children?: unknown } }).props;
-    if (props?.children) return extractHeadingText(props.children);
-  }
-  return "";
-};
 const AUTH_REQUIRED =
   ((import.meta.env.VITE_AUTH_REQUIRED as string) ?? "false") === "true";
 const AUTH_TOKEN_KEY = "medai_auth_token";
 const AUTH_REFRESH_KEY = "medai_auth_refresh";
+const WORKSPACE_UPLOADS_CACHE_KEY = "medai_workspace_uploads_v1";
+const MESH_OVERLAY_CACHE_KEY = "medai_mesh_overlay_v1";
+const WORKSPACE_SETTINGS_CACHE_KEY = "medai_workspace_settings_v1";
+const OVERVIEW_CACHE_KEY = "medai_overview_state_v1";
 
 const SKELETONS = Array.from({ length: 3 }, (_, index) => index);
 const enable3DViewer =
@@ -520,6 +624,33 @@ const VOLUME_COLOR_STOPS: Record<
     [1, [0.993, 0.906, 0.144]],
   ],
 };
+const MESH_OVERLAY_LIMIT = 10;
+const MESH_OVERLAY_MATERIAL_PRESETS: Array<{
+  id: OverlayMaterialPreset;
+  label: string;
+  color: number;
+}> = [
+  {
+    id: "brain",
+    label: MESH_MATERIAL_PRESETS.brain.label,
+    color: MESH_MATERIAL_PRESETS.brain.color,
+  },
+  {
+    id: "bone",
+    label: MESH_MATERIAL_PRESETS.bone.label,
+    color: MESH_MATERIAL_PRESETS.bone.color,
+  },
+  {
+    id: "muscle",
+    label: MESH_MATERIAL_PRESETS.muscle.label,
+    color: MESH_MATERIAL_PRESETS.muscle.color,
+  },
+  {
+    id: "vessel",
+    label: MESH_MATERIAL_PRESETS.vessel.label,
+    color: MESH_MATERIAL_PRESETS.vessel.color,
+  },
+];
 
 export default function App() {
   const location = useLocation();
@@ -582,10 +713,34 @@ export default function App() {
   const [meshIso, setMeshIso] = useState<number>(0.35);
   const [meshStep, setMeshStep] = useState<number>(2);
   const [meshSource, setMeshSource] = useState<MeshSource>("scan");
+  const [meshOpacity, setMeshOpacity] = useState<number>(0.95);
+  const [meshVolumeEnabled, setMeshVolumeEnabled] = useState<boolean>(true);
+  const [meshVolumeOpacity, setMeshVolumeOpacity] = useState<number>(0.18);
+  const [meshVolumeColormap, setMeshVolumeColormap] =
+    useState<VolumeColorMap>("grayscale");
+  const [meshVesselEnabled, setMeshVesselEnabled] =
+    useState<boolean>(false);
+  const [meshVesselThreshold, setMeshVesselThreshold] =
+    useState<number>(0.25);
+  const [meshVesselSigmaMin, setMeshVesselSigmaMin] = useState<number>(1);
+  const [meshVesselSigmaMax, setMeshVesselSigmaMax] = useState<number>(3);
+  const [meshVesselStep, setMeshVesselStep] = useState<number>(3);
   const [meshOverlayEnabled, setMeshOverlayEnabled] = useState<boolean>(true);
+  const [meshOverlayItems, setMeshOverlayItems] = useState<MeshOverlayItem[]>([]);
+  const [activeMeshOverlayId, setActiveMeshOverlayId] = useState<string | null>(
+    null
+  );
+  const [meshOverlayFiles, setMeshOverlayFiles] = useState<File[]>([]);
+  const [meshOverlayUploading, setMeshOverlayUploading] = useState<boolean>(false);
+  const [meshOverlayDropActive, setMeshOverlayDropActive] =
+    useState<boolean>(false);
   const [meshOverlayOpacity, setMeshOverlayOpacity] = useState<number>(0.55);
-  const [meshOverlayIso, setMeshOverlayIso] = useState<number>(0.5);
-  const [meshOverlayStep, setMeshOverlayStep] = useState<number>(1);
+  const [meshOverlayIso, setMeshOverlayIso] = useState<number>(0.35);
+  const [meshOverlayStep, setMeshOverlayStep] = useState<number>(2);
+  const [meshOverlayLockEnabled, setMeshOverlayLockEnabled] =
+    useState<boolean>(true);
+  const [meshOverlayLockTarget, setMeshOverlayLockTarget] =
+    useState<string>("base");
   const [meshWireframe, setMeshWireframe] = useState<boolean>(false);
   const [meshClipEnabled, setMeshClipEnabled] = useState<boolean>(false);
   const [meshClipAxis, setMeshClipAxis] = useState<ClipAxis>("x");
@@ -609,6 +764,8 @@ export default function App() {
     useState<number>(0);
   const [meshSelectionPrecision, setMeshSelectionPrecision] =
     useState<boolean>(false);
+  const [meshPickedLabel, setMeshPickedLabel] = useState<string>("");
+  const [meshLabelEnabled, setMeshLabelEnabled] = useState<boolean>(true);
   const [meshPartOffsets, setMeshPartOffsets] = useState<Record<number, number>>(
     {}
   );
@@ -617,6 +774,7 @@ export default function App() {
   const [meshVertexCount, setMeshVertexCount] = useState<number>(0);
   const [meshCanSculpt, setMeshCanSculpt] = useState<boolean>(true);
   const [meshRevision, setMeshRevision] = useState<number>(0);
+  const [meshOverlayRevision, setMeshOverlayRevision] = useState<number>(0);
   const [viewerMountKey, setViewerMountKey] = useState<number>(0);
   const [meshMountKey, setMeshMountKey] = useState<number>(0);
   const [sliceIndex, setSliceIndex] = useState<SliceIndex>({
@@ -689,6 +847,15 @@ export default function App() {
   const meshViewerRef = useRef<HTMLDivElement | null>(null);
   const meshCleanupRef = useRef<(() => void) | null>(null);
   const meshStateRef = useRef<MeshViewerState | null>(null);
+  const meshVolumeStateRef = useRef<Viewer3DState | null>(null);
+  const meshVolumeCleanupRef = useRef<(() => void) | null>(null);
+  const meshOverlayItemsRef = useRef<MeshOverlayItem[]>([]);
+  const meshOverlayMeshSyncRef = useRef<number>(0);
+  const meshCameraSnapshotRef = useRef<{
+    position: [number, number, number];
+    target: [number, number, number];
+    up: [number, number, number];
+  } | null>(null);
   const meshSculptingRef = useRef<boolean>(false);
   const meshPendingRef = useRef<{
     point: [number, number, number];
@@ -704,6 +871,16 @@ export default function App() {
   const meshSelectionRadiusRef = useRef<number>(meshSelectionRadius);
   const meshSelectionStrengthRef = useRef<number>(meshSelectionStrength);
   const meshSelectionPrecisionRef = useRef<boolean>(meshSelectionPrecision);
+  const meshOverlayOpacityRef = useRef<number>(meshOverlayOpacity);
+  const activeMeshOverlayIdRef = useRef<string | null>(activeMeshOverlayId);
+  const workspaceItemVisibleRef = useRef<boolean>(true);
+  const workspaceTransformRef = useRef<{
+    position: [number, number, number];
+    rotation: [number, number, number];
+  }>({
+    position: [0, 0, 0],
+    rotation: [0, 0, 0],
+  });
   const annotationsRef = useRef<Record<string, AnnotationSet>>({});
   const drawingRef = useRef<DrawingState | null>(null);
   const canvasRefs = useRef<Record<AxisKey, HTMLCanvasElement | null>>({
@@ -721,13 +898,25 @@ export default function App() {
   const rightPanelRef = useRef<HTMLDivElement | null>(null);
   const loginScreenRef = useRef<HTMLDivElement | null>(null);
   const slicePrefetchRef = useRef<SliceIndex | null>(null);
+  const volumeInfoPathRef = useRef<string>("");
+  const volumeInfoRequestRef = useRef<string>("");
+  const volumeInfoRequestTimeRef = useRef<number>(0);
+  const previewPathRef = useRef<string>("");
   const setViewerContainerRef = useCallback((node: HTMLDivElement | null) => {
+    if (!node) {
+      viewerRef.current = null;
+      return;
+    }
     if (viewerRef.current !== node) {
       viewerRef.current = node;
       setViewerMountKey((prev) => prev + 1);
     }
   }, []);
   const setMeshContainerRef = useCallback((node: HTMLDivElement | null) => {
+    if (!node) {
+      meshViewerRef.current = null;
+      return;
+    }
     if (meshViewerRef.current !== node) {
       meshViewerRef.current = node;
       setMeshMountKey((prev) => prev + 1);
@@ -761,6 +950,11 @@ export default function App() {
     () => enableViewerWorkspace && location.pathname === "/workspace",
     [enableViewerWorkspace, location.pathname]
   );
+  const activeWorkspaceItem = useMemo(
+    () => workspaceUploads.find((item) => item.path === workspacePath) ?? null,
+    [workspaceUploads, workspacePath]
+  );
+  const workspaceItemVisible = activeWorkspaceItem?.visible ?? true;
 
   useEffect(() => {
     if (!isWorkspace) return;
@@ -768,7 +962,7 @@ export default function App() {
     const path = params.get("path") ?? "";
     const view = params.get("view");
     const mode = params.get("mode");
-    if (path !== workspacePath) {
+    if (path && path !== workspacePath) {
       setWorkspacePath(path);
     }
     if (view === "2d" || view === "3d") {
@@ -782,6 +976,12 @@ export default function App() {
   useEffect(() => {
     meshBrushRef.current = meshBrushSize;
   }, [meshBrushSize]);
+
+  useEffect(() => {
+    if (meshSource === "mask" && meshVesselEnabled) {
+      setMeshVesselEnabled(false);
+    }
+  }, [meshSource, meshVesselEnabled]);
 
   useEffect(() => {
     meshStrengthRef.current = meshStrength;
@@ -804,6 +1004,614 @@ export default function App() {
   }, [meshSelectionRadius]);
 
   useEffect(() => {
+    meshOverlayOpacityRef.current = meshOverlayOpacity;
+  }, [meshOverlayOpacity]);
+
+  useEffect(() => {
+    workspaceItemVisibleRef.current = workspaceItemVisible;
+  }, [workspaceItemVisible]);
+
+  useEffect(() => {
+    activeMeshOverlayIdRef.current = activeMeshOverlayId;
+  }, [activeMeshOverlayId]);
+
+  useEffect(() => {
+    const raw = localStorage.getItem(WORKSPACE_UPLOADS_CACHE_KEY);
+    if (!raw) return;
+    try {
+      const parsed = JSON.parse(raw) as WorkspaceUploadCacheItem[];
+      if (!Array.isArray(parsed)) return;
+      const normalized = parsed
+        .filter((item) => item && typeof item === "object")
+        .map((item) => {
+          const position: [number, number, number] =
+            Array.isArray(item.position) && item.position.length === 3
+              ? [
+                  Number(item.position[0]) || 0,
+                  Number(item.position[1]) || 0,
+                  Number(item.position[2]) || 0,
+                ]
+              : [0, 0, 0];
+          const rotation: [number, number, number] =
+            Array.isArray(item.rotation) && item.rotation.length === 3
+              ? [
+                  Number(item.rotation[0]) || 0,
+                  Number(item.rotation[1]) || 0,
+                  Number(item.rotation[2]) || 0,
+                ]
+              : [0, 0, 0];
+          return {
+            path: typeof item.path === "string" ? item.path : "",
+            label:
+              typeof item.label === "string" && item.label.length > 0
+                ? item.label
+                : typeof item.path === "string"
+                  ? item.path
+                  : "Scan",
+            kind: typeof item.kind === "string" ? item.kind : "nifti",
+            createdAt:
+              typeof item.createdAt === "string"
+                ? item.createdAt
+                : new Date().toISOString(),
+            visible: typeof item.visible === "boolean" ? item.visible : true,
+            position,
+            rotation,
+          };
+        })
+        .filter((item) => item.path.length > 0);
+      if (normalized.length === 0) return;
+      setWorkspaceUploads(normalized);
+      setWorkspacePath((prev) => prev || normalized[0].path);
+      setActiveWorkspaceIndex((prev) =>
+        Math.min(prev, Math.max(0, normalized.length - 1))
+      );
+    } catch {
+      // ignore cache errors
+    }
+  }, []);
+
+  useEffect(() => {
+    const raw = localStorage.getItem(MESH_OVERLAY_CACHE_KEY);
+    if (!raw) return;
+    try {
+      const parsed = JSON.parse(raw) as MeshOverlayCacheItem[];
+      if (!Array.isArray(parsed)) return;
+      const validPresets = new Set(
+        MESH_OVERLAY_MATERIAL_PRESETS.map((preset) => preset.id)
+      );
+      const normalized = parsed
+        .filter((item) => item && typeof item === "object")
+        .map((item) => {
+          const presetId =
+            typeof item.materialPreset === "string" &&
+            validPresets.has(item.materialPreset)
+              ? item.materialPreset
+              : MESH_OVERLAY_MATERIAL_PRESETS[0]?.id ?? "brain";
+          const opacity =
+            typeof item.opacity === "number"
+              ? Math.max(0.05, Math.min(item.opacity, 1))
+              : 0.75;
+          const renderMode =
+            item.renderMode === "mesh" || item.renderMode === "volume"
+              ? item.renderMode
+              : "volume";
+          const position =
+            Array.isArray(item.position) && item.position.length === 3
+              ? [
+                  Number(item.position[0]) || 0,
+                  Number(item.position[1]) || 0,
+                  Number(item.position[2]) || 0,
+                ]
+              : [0, 0, 0];
+          const rotation =
+            Array.isArray(item.rotation) && item.rotation.length === 3
+              ? [
+                  Number(item.rotation[0]) || 0,
+                  Number(item.rotation[1]) || 0,
+                  Number(item.rotation[2]) || 0,
+                ]
+              : [0, 0, 0];
+          const clipEnabled =
+            typeof item.clipEnabled === "boolean" ? item.clipEnabled : false;
+          const clipAxis =
+            item.clipAxis === "x" || item.clipAxis === "y" || item.clipAxis === "z"
+              ? item.clipAxis
+              : "z";
+          const clipValue =
+            typeof item.clipValue === "number"
+              ? Math.max(0, Math.min(item.clipValue, 1))
+              : 0.5;
+          const explodeEnabled =
+            typeof item.explodeEnabled === "boolean" ? item.explodeEnabled : false;
+          const explodeDistance =
+            typeof item.explodeDistance === "number"
+              ? Math.max(0, Math.min(item.explodeDistance, 1))
+              : 0.25;
+          return {
+            id:
+              typeof item.id === "string" && item.id.length > 0
+                ? item.id
+                : `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+            path: typeof item.path === "string" ? item.path : "",
+            label:
+              typeof item.label === "string" && item.label.length > 0
+                ? item.label
+                : typeof item.path === "string"
+                  ? item.path
+                  : "Overlay",
+            materialPreset: presetId as OverlayMaterialPreset,
+            opacity,
+            visible: typeof item.visible === "boolean" ? item.visible : true,
+            renderMode,
+            layer: "overlay" as OverlayLayer,
+            position: position as [number, number, number],
+            rotation: rotation as [number, number, number],
+            clipEnabled,
+            clipAxis,
+            clipValue,
+            explodeEnabled,
+            explodeDistance,
+          } as MeshOverlayItem;
+        })
+        .filter((item) => item.path.length > 0);
+      if (normalized.length === 0) return;
+      const limited = normalized.slice(0, MESH_OVERLAY_LIMIT);
+      setMeshOverlayItems(limited);
+    } catch {
+      // ignore cache errors
+    }
+  }, []);
+
+  const workspaceSettingsLoadedRef = useRef<boolean>(false);
+  const overviewSettingsLoadedRef = useRef<boolean>(false);
+
+  useEffect(() => {
+    if (!isWorkspace || workspaceSettingsLoadedRef.current) return;
+    workspaceSettingsLoadedRef.current = true;
+    const raw = localStorage.getItem(WORKSPACE_SETTINGS_CACHE_KEY);
+    if (!raw) return;
+    try {
+      const parsed = JSON.parse(raw) as WorkspaceSettingsCache;
+      if (!parsed || typeof parsed !== "object") return;
+      const params = new URLSearchParams(location.search);
+      const viewParam = params.get("view");
+      const modeParam = params.get("mode");
+      const hasViewOverride = viewParam === "2d" || viewParam === "3d";
+      const hasModeOverride = modeParam === "volume" || modeParam === "mesh";
+      if (
+        !hasViewOverride &&
+        (parsed.viewerMode === "2d" || parsed.viewerMode === "3d")
+      ) {
+        setViewerMode(parsed.viewerMode);
+      }
+      if (
+        !hasModeOverride &&
+        (parsed.viewer3dMode === "volume" || parsed.viewer3dMode === "mesh")
+      ) {
+        setViewer3dMode(parsed.viewer3dMode);
+      }
+      if (
+        typeof parsed.sliceColormap === "string" &&
+        SLICE_COLORMAPS.some((item) => item.id === parsed.sliceColormap)
+      ) {
+        setSliceColormap(parsed.sliceColormap);
+      }
+      if (
+        typeof parsed.volumeColormap === "string" &&
+        VOLUME_COLORMAPS.some((item) => item.id === parsed.volumeColormap)
+      ) {
+        setVolumeColormap(parsed.volumeColormap);
+      }
+      if (typeof parsed.volumeOpacity === "number") {
+        setVolumeOpacity(Math.max(0.1, Math.min(parsed.volumeOpacity, 1)));
+      }
+      if (typeof parsed.clipEnabled === "boolean") {
+        setClipEnabled(parsed.clipEnabled);
+      }
+      if (parsed.clipAxis === "x" || parsed.clipAxis === "y" || parsed.clipAxis === "z") {
+        setClipAxis(parsed.clipAxis);
+      }
+      if (typeof parsed.clipValue === "number") {
+        setClipValue(Math.max(0, Math.min(parsed.clipValue, 1)));
+      }
+      if (
+        parsed.meshTool === "orbit" ||
+        parsed.meshTool === "sculpt" ||
+        parsed.meshTool === "carve" ||
+        parsed.meshTool === "select" ||
+        parsed.meshTool === "label"
+      ) {
+        setMeshTool(parsed.meshTool);
+      }
+      if (typeof parsed.meshIso === "number") {
+        setMeshIso(Math.max(0.05, Math.min(parsed.meshIso, 1)));
+      }
+      if (typeof parsed.meshStep === "number") {
+        setMeshStep(Math.max(1, Math.min(parsed.meshStep, 6)));
+      }
+      if (parsed.meshSource === "scan" || parsed.meshSource === "mask") {
+        setMeshSource(parsed.meshSource);
+      }
+      if (typeof parsed.meshOpacity === "number") {
+        setMeshOpacity(Math.max(0.1, Math.min(parsed.meshOpacity, 1)));
+      }
+      if (typeof parsed.meshVolumeEnabled === "boolean") {
+        setMeshVolumeEnabled(parsed.meshVolumeEnabled);
+      }
+      if (typeof parsed.meshVolumeOpacity === "number") {
+        setMeshVolumeOpacity(Math.max(0, Math.min(parsed.meshVolumeOpacity, 0.8)));
+      }
+      if (
+        typeof parsed.meshVolumeColormap === "string" &&
+        VOLUME_COLORMAPS.some((item) => item.id === parsed.meshVolumeColormap)
+      ) {
+        setMeshVolumeColormap(parsed.meshVolumeColormap);
+      }
+      if (typeof parsed.meshVesselEnabled === "boolean") {
+        setMeshVesselEnabled(parsed.meshVesselEnabled);
+      }
+      if (typeof parsed.meshVesselThreshold === "number") {
+        setMeshVesselThreshold(Math.max(0.05, Math.min(parsed.meshVesselThreshold, 1)));
+      }
+      if (typeof parsed.meshVesselSigmaMin === "number") {
+        setMeshVesselSigmaMin(Math.max(0.5, Math.min(parsed.meshVesselSigmaMin, 8)));
+      }
+      if (typeof parsed.meshVesselSigmaMax === "number") {
+        setMeshVesselSigmaMax(Math.max(1, Math.min(parsed.meshVesselSigmaMax, 12)));
+      }
+      if (typeof parsed.meshVesselStep === "number") {
+        setMeshVesselStep(Math.max(1, Math.min(parsed.meshVesselStep, 8)));
+      }
+      if (typeof parsed.meshOverlayEnabled === "boolean") {
+        setMeshOverlayEnabled(parsed.meshOverlayEnabled);
+      }
+      if (typeof parsed.meshOverlayOpacity === "number") {
+        setMeshOverlayOpacity(Math.max(0.1, Math.min(parsed.meshOverlayOpacity, 1)));
+      }
+      if (typeof parsed.meshOverlayIso === "number") {
+        setMeshOverlayIso(Math.max(0.05, Math.min(parsed.meshOverlayIso, 1)));
+      }
+      if (typeof parsed.meshOverlayStep === "number") {
+        setMeshOverlayStep(Math.max(1, Math.min(parsed.meshOverlayStep, 6)));
+      }
+      if (typeof parsed.meshOverlayLockEnabled === "boolean") {
+        setMeshOverlayLockEnabled(parsed.meshOverlayLockEnabled);
+      }
+      if (typeof parsed.meshOverlayLockTarget === "string") {
+        setMeshOverlayLockTarget(parsed.meshOverlayLockTarget);
+      }
+      if (typeof parsed.meshWireframe === "boolean") {
+        setMeshWireframe(parsed.meshWireframe);
+      }
+      if (typeof parsed.meshClipEnabled === "boolean") {
+        setMeshClipEnabled(parsed.meshClipEnabled);
+      }
+      if (
+        parsed.meshClipAxis === "x" ||
+        parsed.meshClipAxis === "y" ||
+        parsed.meshClipAxis === "z"
+      ) {
+        setMeshClipAxis(parsed.meshClipAxis);
+      }
+      if (typeof parsed.meshClipValue === "number") {
+        setMeshClipValue(Math.max(0, Math.min(parsed.meshClipValue, 1)));
+      }
+      if (typeof parsed.meshExplodeEnabled === "boolean") {
+        setMeshExplodeEnabled(parsed.meshExplodeEnabled);
+      }
+      if (typeof parsed.meshExplodeDistance === "number") {
+        setMeshExplodeDistance(Math.max(0, Math.min(parsed.meshExplodeDistance, 1)));
+      }
+      if (
+        typeof parsed.meshMaterialPreset === "string" &&
+        Object.prototype.hasOwnProperty.call(
+          MESH_MATERIAL_PRESETS,
+          parsed.meshMaterialPreset
+        )
+      ) {
+        setMeshMaterialPreset(parsed.meshMaterialPreset as MeshMaterialPreset);
+      }
+      if (typeof parsed.meshGroupCount === "number") {
+        setMeshGroupCount(
+          Math.max(1, Math.min(Math.floor(parsed.meshGroupCount), MAX_MESH_PARTS))
+        );
+      }
+      if (typeof parsed.meshSelectionRadius === "number") {
+        setMeshSelectionRadius(Math.max(1, Math.min(parsed.meshSelectionRadius, 50)));
+      }
+      if (typeof parsed.meshSelectionStrength === "number") {
+        setMeshSelectionStrength(
+          Math.max(0.05, Math.min(parsed.meshSelectionStrength, 1))
+        );
+      }
+      if (typeof parsed.meshSelectionPrecision === "boolean") {
+        setMeshSelectionPrecision(parsed.meshSelectionPrecision);
+      }
+      if (typeof parsed.meshLabelEnabled === "boolean") {
+        setMeshLabelEnabled(parsed.meshLabelEnabled);
+      }
+      if (typeof parsed.overlayOpacity === "number") {
+        setOverlayOpacity(Math.max(0.05, Math.min(parsed.overlayOpacity, 1)));
+      }
+      if (
+        parsed.workspaceTool === "brush" ||
+        parsed.workspaceTool === "erase" ||
+        parsed.workspaceTool === "rect" ||
+        parsed.workspaceTool === "measure"
+      ) {
+        setWorkspaceTool(parsed.workspaceTool);
+      }
+      if (typeof parsed.brushSize === "number") {
+        setBrushSize(Math.max(2, Math.min(parsed.brushSize, 80)));
+      }
+    } catch {
+      // ignore cache errors
+    }
+  }, [isWorkspace, location.search]);
+
+  useEffect(() => {
+    if (isWorkspace || overviewSettingsLoadedRef.current) return;
+    overviewSettingsLoadedRef.current = true;
+    const raw = localStorage.getItem(OVERVIEW_CACHE_KEY);
+    if (!raw) return;
+    try {
+      const parsed = JSON.parse(raw) as OverviewCache;
+      if (!parsed || typeof parsed !== "object") return;
+      if (parsed.uploadResult) {
+        setUploadResult(parsed.uploadResult);
+      }
+      if (parsed.uploadPreview) {
+        setUploadPreview(parsed.uploadPreview);
+      }
+      if (typeof parsed.previewPath === "string") {
+        setPreviewPath(parsed.previewPath);
+      }
+      if (parsed.volumeInfo) {
+        setVolumeInfo(parsed.volumeInfo);
+      }
+      if (parsed.sliceIndex) {
+        setSliceIndex(parsed.sliceIndex);
+      }
+      if (parsed.sliceRequestIndex) {
+        setSliceRequestIndex(parsed.sliceRequestIndex);
+      }
+      if (typeof parsed.viewerChannel === "number") {
+        setViewerChannel(parsed.viewerChannel);
+      }
+      if (parsed.viewerMode === "2d" || parsed.viewerMode === "3d") {
+        setViewerMode(parsed.viewerMode);
+      }
+      if (parsed.viewer3dMode === "volume" || parsed.viewer3dMode === "mesh") {
+        setViewer3dMode(parsed.viewer3dMode);
+      }
+      if (
+        typeof parsed.sliceColormap === "string" &&
+        SLICE_COLORMAPS.some((item) => item.id === parsed.sliceColormap)
+      ) {
+        setSliceColormap(parsed.sliceColormap);
+      }
+      if (
+        typeof parsed.volumeColormap === "string" &&
+        VOLUME_COLORMAPS.some((item) => item.id === parsed.volumeColormap)
+      ) {
+        setVolumeColormap(parsed.volumeColormap);
+      }
+      if (typeof parsed.volumeOpacity === "number") {
+        setVolumeOpacity(Math.max(0.1, Math.min(parsed.volumeOpacity, 1)));
+      }
+      if (typeof parsed.clipEnabled === "boolean") {
+        setClipEnabled(parsed.clipEnabled);
+      }
+      if (
+        parsed.clipAxis === "x" ||
+        parsed.clipAxis === "y" ||
+        parsed.clipAxis === "z"
+      ) {
+        setClipAxis(parsed.clipAxis);
+      }
+      if (typeof parsed.clipValue === "number") {
+        setClipValue(Math.max(0, Math.min(parsed.clipValue, 1)));
+      }
+      if (typeof parsed.selectedModelId === "string") {
+        setSelectedModelId(parsed.selectedModelId);
+      }
+    } catch {
+      // ignore cache errors
+    }
+  }, [isWorkspace]);
+
+  useEffect(() => {
+    const payload: WorkspaceUploadCacheItem[] = workspaceUploads.map((item) => ({
+      path: item.path,
+      label: item.label,
+      kind: item.kind,
+      createdAt: item.createdAt,
+      visible: item.visible,
+      position: item.position,
+      rotation: item.rotation,
+    }));
+    localStorage.setItem(WORKSPACE_UPLOADS_CACHE_KEY, JSON.stringify(payload));
+  }, [workspaceUploads]);
+
+  useEffect(() => {
+    if (isWorkspace || !overviewSettingsLoadedRef.current) return;
+    const payload: OverviewCache = {
+      uploadResult: uploadResult ?? undefined,
+      uploadPreview: uploadPreview ?? undefined,
+      previewPath: previewPath || undefined,
+      volumeInfo: volumeInfo ?? undefined,
+      sliceIndex,
+      sliceRequestIndex,
+      viewerChannel,
+      viewerMode,
+      viewer3dMode,
+      sliceColormap,
+      volumeColormap,
+      volumeOpacity,
+      clipEnabled,
+      clipAxis,
+      clipValue,
+      selectedModelId,
+    };
+    localStorage.setItem(OVERVIEW_CACHE_KEY, JSON.stringify(payload));
+  }, [
+    isWorkspace,
+    uploadResult,
+    uploadPreview,
+    previewPath,
+    volumeInfo,
+    sliceIndex,
+    sliceRequestIndex,
+    viewerChannel,
+    viewerMode,
+    viewer3dMode,
+    sliceColormap,
+    volumeColormap,
+    volumeOpacity,
+    clipEnabled,
+    clipAxis,
+    clipValue,
+    selectedModelId,
+  ]);
+
+  useEffect(() => {
+    const payload: MeshOverlayCacheItem[] = meshOverlayItems.map((item) => ({
+      id: item.id,
+      path: item.path,
+      label: item.label,
+      materialPreset: item.materialPreset,
+      opacity: item.opacity,
+      visible: item.visible,
+      renderMode: item.renderMode,
+      position: item.position,
+      rotation: item.rotation,
+      clipEnabled: item.clipEnabled,
+      clipAxis: item.clipAxis,
+      clipValue: item.clipValue,
+      explodeEnabled: item.explodeEnabled,
+      explodeDistance: item.explodeDistance,
+    }));
+    localStorage.setItem(MESH_OVERLAY_CACHE_KEY, JSON.stringify(payload));
+  }, [meshOverlayItems]);
+
+  useEffect(() => {
+    if (!isWorkspace) return;
+    const payload: WorkspaceSettingsCache = {
+      viewerMode,
+      viewer3dMode,
+      sliceColormap,
+      volumeColormap,
+      volumeOpacity,
+      clipEnabled,
+      clipAxis,
+      clipValue,
+      meshTool,
+      meshIso,
+      meshStep,
+      meshSource,
+      meshOpacity,
+      meshVolumeEnabled,
+      meshVolumeOpacity,
+      meshVolumeColormap,
+      meshVesselEnabled,
+      meshVesselThreshold,
+      meshVesselSigmaMin,
+      meshVesselSigmaMax,
+      meshVesselStep,
+      meshOverlayEnabled,
+      meshOverlayOpacity,
+      meshOverlayIso,
+      meshOverlayStep,
+      meshOverlayLockEnabled,
+      meshOverlayLockTarget,
+      meshWireframe,
+      meshClipEnabled,
+      meshClipAxis,
+      meshClipValue,
+      meshExplodeEnabled,
+      meshExplodeDistance,
+      meshMaterialPreset,
+      meshGroupCount,
+      meshSelectionRadius,
+      meshSelectionStrength,
+      meshSelectionPrecision,
+      meshLabelEnabled,
+      overlayOpacity,
+      workspaceTool,
+      brushSize,
+    };
+    localStorage.setItem(WORKSPACE_SETTINGS_CACHE_KEY, JSON.stringify(payload));
+  }, [
+    isWorkspace,
+    viewerMode,
+    viewer3dMode,
+    sliceColormap,
+    volumeColormap,
+    volumeOpacity,
+    clipEnabled,
+    clipAxis,
+    clipValue,
+    meshTool,
+    meshIso,
+    meshStep,
+    meshSource,
+    meshOpacity,
+    meshVolumeEnabled,
+    meshVolumeOpacity,
+    meshVolumeColormap,
+    meshVesselEnabled,
+    meshVesselThreshold,
+    meshVesselSigmaMin,
+    meshVesselSigmaMax,
+    meshVesselStep,
+    meshOverlayEnabled,
+    meshOverlayOpacity,
+    meshOverlayIso,
+    meshOverlayStep,
+    meshOverlayLockEnabled,
+    meshOverlayLockTarget,
+    meshWireframe,
+    meshClipEnabled,
+    meshClipAxis,
+    meshClipValue,
+    meshExplodeEnabled,
+    meshExplodeDistance,
+    meshMaterialPreset,
+    meshGroupCount,
+    meshSelectionRadius,
+    meshSelectionStrength,
+    meshSelectionPrecision,
+    meshLabelEnabled,
+    overlayOpacity,
+    workspaceTool,
+    brushSize,
+  ]);
+
+  useEffect(() => {
+    if (meshOverlayItems.length === 0) {
+      if (activeMeshOverlayId !== null) {
+        setActiveMeshOverlayId(null);
+      }
+      return;
+    }
+    if (
+      activeMeshOverlayId &&
+      meshOverlayItems.some((item) => item.id === activeMeshOverlayId)
+    ) {
+      return;
+    }
+    setActiveMeshOverlayId(meshOverlayItems[0].id);
+  }, [meshOverlayItems, activeMeshOverlayId]);
+
+  useEffect(() => {
+    if (meshOverlayLockTarget === "base") return;
+    if (meshOverlayItems.some((item) => item.id === meshOverlayLockTarget)) {
+      return;
+    }
+    setMeshOverlayLockTarget("base");
+  }, [meshOverlayItems, meshOverlayLockTarget]);
+
+  useEffect(() => {
     meshSelectionStrengthRef.current = meshSelectionStrength;
   }, [meshSelectionStrength]);
 
@@ -824,6 +1632,14 @@ export default function App() {
       setWorkspacePath("");
     }
   }, [isWorkspace, workspacePath]);
+
+  useEffect(() => {
+    if (!isWorkspace) return;
+    if (workspacePath) return;
+    if (workspaceUploads.length === 0) return;
+    setWorkspacePath(workspaceUploads[0].path);
+    setActiveWorkspaceIndex(0);
+  }, [isWorkspace, workspacePath, workspaceUploads]);
 
   useEffect(() => {
     if (!isWorkspace) return undefined;
@@ -909,7 +1725,7 @@ export default function App() {
   const reportRiskClass = reportRiskLevel
     ? `report-risk-${reportRiskLevel}`
     : "";
-  const uploadPath = workspacePath || uploadResult?.saved_path || "";
+  const uploadPath = isWorkspace ? workspacePath : uploadResult?.saved_path || "";
   const isAuthenticated = Boolean(authToken && authUser);
   const authDisplayName = authUser?.email || authUser?.username || "User";
   const authRoleLabel = authUser?.role || "";
@@ -934,18 +1750,21 @@ export default function App() {
   const hasPartOffsets = Object.keys(meshPartOffsets).length > 0;
   const meshHint = useMemo(() => {
     if (meshTool === "orbit") {
-      return "Orbit tool: drag to rotate, scroll to zoom, right-click to pan.";
+      return "Orbit tool: drag to rotate, scroll to zoom, right-click to pan. WASD to fly.";
     }
     if (meshTool === "select") {
-      return "Select tool: click to pick voxels. Hold Ctrl or Shift + drag to orbit.";
+      return "Select tool: click a part to identify its region and pick voxels. Hold Ctrl or Shift + drag to orbit. WASD to fly.";
+    }
+    if (meshTool === "label") {
+      return "Label tool: click a part to pin an on-screen callout. Hold Ctrl or Shift + drag to orbit. WASD to fly.";
     }
     if (meshExplodeEnabled) {
-      return "Explode view: separate anatomy groups. Hold Ctrl or Shift + drag to orbit.";
+      return "Explode view: separate anatomy groups. Hold Ctrl or Shift + drag to orbit. WASD to fly.";
     }
     if (meshTool === "sculpt") {
-      return "Sculpt tool: drag to add volume. Hold Ctrl or Shift + drag to orbit.";
+      return "Sculpt tool: drag to add volume. Hold Ctrl or Shift + drag to orbit. WASD to fly.";
     }
-    return "Carve tool: drag to remove volume. Hold Ctrl or Shift + drag to orbit.";
+    return "Carve tool: drag to remove volume. Hold Ctrl or Shift + drag to orbit. WASD to fly.";
   }, [meshTool, meshExplodeEnabled]);
 
   useEffect(() => {
@@ -962,6 +1781,94 @@ export default function App() {
       document.body.style.height = "";
     };
   }, [isWorkspace, showLogin]);
+
+  useEffect(() => {
+    if (!isWorkspace) return;
+    const baseVisible = workspaceItemVisible;
+    const viewerState = viewer3dStateRef.current;
+    if (viewerState?.volume?.setVisibility) {
+      viewerState.volume.setVisibility(baseVisible);
+      viewerState.renderWindow?.render?.();
+    }
+    const meshVolumeState = meshVolumeStateRef.current;
+    if (meshVolumeState?.volume?.setVisibility) {
+      meshVolumeState.volume.setVisibility(baseVisible);
+      meshVolumeState.renderWindow?.render?.();
+    }
+    const meshState = meshStateRef.current;
+    if (meshState?.meshGroup) {
+      meshState.meshGroup.visible = baseVisible;
+    }
+  }, [isWorkspace, workspaceItemVisible]);
+
+  useEffect(() => {
+    if (!isWorkspace) return;
+    const position = activeWorkspaceItem?.position ?? [0, 0, 0];
+    const rotation = activeWorkspaceItem?.rotation ?? [0, 0, 0];
+    const nextPosition: [number, number, number] = [
+      Number(position[0]) || 0,
+      Number(position[1]) || 0,
+      Number(position[2]) || 0,
+    ];
+    const nextRotation: [number, number, number] = [
+      Number(rotation[0]) || 0,
+      Number(rotation[1]) || 0,
+      Number(rotation[2]) || 0,
+    ];
+    workspaceTransformRef.current = {
+      position: nextPosition,
+      rotation: nextRotation,
+    };
+    const viewerState = viewer3dStateRef.current;
+    if (viewerState?.volume) {
+      if (typeof viewerState.volume.setPosition === "function") {
+        viewerState.volume.setPosition(
+          nextPosition[0],
+          nextPosition[1],
+          nextPosition[2]
+        );
+      }
+      if (typeof viewerState.volume.setOrientation === "function") {
+        viewerState.volume.setOrientation(
+          nextRotation[0],
+          nextRotation[1],
+          nextRotation[2]
+        );
+      }
+      viewerState.renderWindow?.render?.();
+    }
+    const meshVolumeState = meshVolumeStateRef.current;
+    if (meshVolumeState?.volume) {
+      if (typeof meshVolumeState.volume.setPosition === "function") {
+        meshVolumeState.volume.setPosition(
+          nextPosition[0],
+          nextPosition[1],
+          nextPosition[2]
+        );
+      }
+      if (typeof meshVolumeState.volume.setOrientation === "function") {
+        meshVolumeState.volume.setOrientation(
+          nextRotation[0],
+          nextRotation[1],
+          nextRotation[2]
+        );
+      }
+      meshVolumeState.renderWindow?.render?.();
+    }
+    const meshState = meshStateRef.current;
+    if (meshState?.meshGroup) {
+      meshState.meshGroup.position.set(
+        nextPosition[0],
+        nextPosition[1],
+        nextPosition[2]
+      );
+      meshState.meshGroup.rotation.set(
+        (nextRotation[0] * Math.PI) / 180,
+        (nextRotation[1] * Math.PI) / 180,
+        (nextRotation[2] * Math.PI) / 180
+      );
+    }
+  }, [isWorkspace, activeWorkspaceItem]);
 
   const resolveAuthStepFromPath = useCallback((path: string): AuthStep => {
     if (path === "/login/forgot") return "forgot-request";
@@ -1142,6 +2049,17 @@ export default function App() {
   }, [jobStatus, loadHistory, isAuthenticated]);
 
   const fetchVolumeInfo = useCallback(async (path: string) => {
+    if (volumeInfoPathRef.current === path) {
+      return;
+    }
+    if (volumeInfoRequestRef.current === path) {
+      const elapsed = Date.now() - volumeInfoRequestTimeRef.current;
+      if (elapsed < 1500) {
+        return;
+      }
+    }
+    volumeInfoRequestRef.current = path;
+    volumeInfoRequestTimeRef.current = Date.now();
     try {
       setViewerError("");
       setViewerLoading(true);
@@ -1151,18 +2069,25 @@ export default function App() {
       if (!res.ok) throw new Error(`Viewer API failed (${res.status})`);
       const data = (await res.json()) as VolumeInfo;
       setVolumeInfo(data);
+      volumeInfoPathRef.current = path;
     } catch (e: unknown) {
       const message =
         e instanceof Error ? e.message : "Failed to load volume metadata.";
       setViewerError(message);
       setVolumeInfo(null);
+      volumeInfoPathRef.current = "";
     } finally {
       setViewerLoading(false);
+      if (volumeInfoRequestRef.current === path) {
+        volumeInfoRequestRef.current = "";
+      }
     }
   }, [apiFetch]);
 
   useEffect(() => {
     if (!uploadPath) {
+      volumeInfoPathRef.current = "";
+      volumeInfoRequestRef.current = "";
       setVolumeInfo(null);
       setViewerError("");
       return;
@@ -1173,11 +2098,14 @@ export default function App() {
 
   useEffect(() => {
     if (!uploadPath) {
+      previewPathRef.current = "";
       setPreviewPath("");
       return;
     }
     if (AUTH_REQUIRED && !isAuthenticated) return;
     if (previewPath === uploadPath) return;
+    if (previewPathRef.current === uploadPath) return;
+    previewPathRef.current = uploadPath;
     const fetchPreview = async () => {
       try {
         const previewRes = await apiFetch(
@@ -1189,6 +2117,10 @@ export default function App() {
         setPreviewPath(uploadPath);
       } catch {
         // no-op
+      } finally {
+        if (previewPathRef.current === uploadPath) {
+          previewPathRef.current = "";
+        }
       }
     };
     void fetchPreview();
@@ -1226,12 +2158,28 @@ export default function App() {
     return `${API_BASE}/api/uploads/volume-file?${params.toString()}`;
   }, [uploadPath, viewerChannel, authToken]);
 
+  const buildVolumeFileUrlFor = useCallback(
+    (path: string, channelOverride?: number) => {
+      const params = new URLSearchParams({
+        path,
+        channel: String(channelOverride ?? viewerChannel),
+        t: String(Date.now()),
+      });
+      if (authToken) {
+        params.set("token", authToken);
+      }
+      return `${API_BASE}/api/uploads/volume-file?${params.toString()}`;
+    },
+    [authToken, viewerChannel]
+  );
+
   const buildMeshUrl = useCallback(
     (
       pathOverride?: string,
       isoOverride?: number,
       stepOverride?: number,
-      channelOverride?: number
+      channelOverride?: number,
+      options?: { disableVessel?: boolean; label?: number }
     ) => {
       const path = pathOverride ?? uploadPath;
       if (!path) return "";
@@ -1246,12 +2194,36 @@ export default function App() {
         rev: String(meshRevision),
         t: String(Date.now()),
       });
+      if (typeof options?.label === "number") {
+        params.set("label", String(options.label));
+      }
+      const disableVessel = options?.disableVessel ?? false;
+      if (!disableVessel && meshVesselEnabled && meshSource !== "mask") {
+        params.set("vessel", "true");
+        params.set("vessel_threshold", String(meshVesselThreshold));
+        params.set("vessel_sigma_min", String(meshVesselSigmaMin));
+        params.set("vessel_sigma_max", String(meshVesselSigmaMax));
+        params.set("vessel_step", String(meshVesselStep));
+      }
       if (authToken) {
         params.set("token", authToken);
       }
       return `${API_BASE}/api/uploads/mesh?${params.toString()}`;
     },
-    [uploadPath, viewerChannel, meshIso, meshStep, meshRevision, authToken]
+    [
+      uploadPath,
+      viewerChannel,
+      meshIso,
+      meshStep,
+      meshRevision,
+      authToken,
+      meshVesselEnabled,
+      meshVesselThreshold,
+      meshVesselSigmaMin,
+      meshVesselSigmaMax,
+      meshVesselStep,
+      meshSource,
+    ]
   );
 
   const fallbackMaskPath = useMemo(() => {
@@ -1260,12 +2232,13 @@ export default function App() {
       (item) => item.status === "done" && Boolean(item.outputs?.mask_path)
     );
     if (!candidates.length) return "";
-    if (uploadPath) {
-      const match = candidates.find((item) => item.input_path === uploadPath);
-      if (match) return match.outputs.mask_path;
+    if (!uploadPath) {
+      return isWorkspace ? "" : candidates[0]?.outputs?.mask_path ?? "";
     }
+    const match = candidates.find((item) => item.input_path === uploadPath);
+    if (match) return match.outputs.mask_path;
     return candidates[0]?.outputs?.mask_path ?? "";
-  }, [jobHistory, uploadPath]);
+  }, [jobHistory, uploadPath, isWorkspace]);
 
   const meshMaskPath =
     jobResult?.outputs?.mask_path && jobResult.outputs.mask_path.length > 0
@@ -1277,8 +2250,107 @@ export default function App() {
     [meshSource, meshMaskPath, uploadPath]
   );
   const meshOverlayPath = useMemo(
-    () => (meshSource === "scan" && meshOverlayEnabled ? meshMaskPath : ""),
-    [meshSource, meshOverlayEnabled, meshMaskPath]
+    () => (meshSource === "scan" ? meshMaskPath : ""),
+    [meshSource, meshMaskPath]
+  );
+
+  useEffect(() => {
+    meshOverlayItemsRef.current = meshOverlayItems;
+  }, [meshOverlayItems]);
+
+  const getOverlayMaterialPreset = useCallback(
+    (presetId: OverlayMaterialPreset) => {
+      return (
+        MESH_OVERLAY_MATERIAL_PRESETS.find((preset) => preset.id === presetId) ??
+        MESH_OVERLAY_MATERIAL_PRESETS[0]
+      );
+    },
+    []
+  );
+  const getOverlayPreset = useCallback(
+    (presetId: OverlayMaterialPreset) => getOverlayMaterialPreset(presetId),
+    [getOverlayMaterialPreset]
+  );
+
+  const getOverlayLockTransform = useCallback(() => {
+    const position: [number, number, number] = [0, 0, 0];
+    const rotation: [number, number, number] = [0, 0, 0];
+    if (!meshOverlayLockEnabled) {
+      return { position, rotation };
+    }
+    if (meshOverlayLockTarget === "base") {
+      return { position, rotation };
+    }
+    const target = meshOverlayItemsRef.current.find(
+      (item) => item.id === meshOverlayLockTarget
+    );
+    if (!target) {
+      return { position, rotation };
+    }
+    const targetPosition = target.position ?? position;
+    const targetRotation = target.rotation ?? rotation;
+    return {
+      position: [
+        Number(targetPosition[0]) || 0,
+        Number(targetPosition[1]) || 0,
+        Number(targetPosition[2]) || 0,
+      ],
+      rotation: [
+        Number(targetRotation[0]) || 0,
+        Number(targetRotation[1]) || 0,
+        Number(targetRotation[2]) || 0,
+      ],
+    };
+  }, [meshOverlayLockEnabled, meshOverlayLockTarget]);
+
+  const applyOverlayLockTransform = useCallback(
+    (mesh: any) => {
+      if (!mesh) return;
+      const { position, rotation } = getOverlayLockTransform();
+      mesh.position.set(position[0], position[1], position[2]);
+      mesh.rotation.set(
+        (rotation[0] * Math.PI) / 180,
+        (rotation[1] * Math.PI) / 180,
+        (rotation[2] * Math.PI) / 180
+      );
+    },
+    [getOverlayLockTransform]
+  );
+
+  const colorToRgb = useCallback((hexColor: number) => {
+    const r = (hexColor >> 16) & 255;
+    const g = (hexColor >> 8) & 255;
+    const b = hexColor & 255;
+    return [r / 255, g / 255, b / 255] as [number, number, number];
+  }, []);
+
+  const applyOverlayTransfer = useCallback(
+    (
+      ctfun: any,
+      ofun: any,
+      dataRange: [number, number],
+      presetId: OverlayMaterialPreset,
+      opacity: number
+    ) => {
+      const [min, max] = dataRange;
+      const range = max - min || 1;
+      const preset = getOverlayPreset(presetId);
+      const color = colorToRgb(preset.color);
+      const mid = min + range * 0.45;
+      const hi = min + range * 0.8;
+      const opacityScale = Math.max(0.05, Math.min(opacity, 0.95));
+      ctfun.removeAllPoints();
+      ctfun.addRGBPoint(min, 0.0, 0.0, 0.0);
+      ctfun.addRGBPoint(mid, color[0] * 0.6, color[1] * 0.6, color[2] * 0.6);
+      ctfun.addRGBPoint(hi, color[0], color[1], color[2]);
+      ctfun.addRGBPoint(max, color[0], color[1], color[2]);
+      ofun.removeAllPoints();
+      ofun.addPoint(min, 0.0);
+      ofun.addPoint(mid, 0.08 * opacityScale);
+      ofun.addPoint(hi, 0.35 * opacityScale);
+      ofun.addPoint(max, 0.7 * opacityScale);
+    },
+    [colorToRgb, getOverlayPreset]
   );
 
   const requestMeshRebuild = useCallback(() => {
@@ -1286,10 +2358,527 @@ export default function App() {
     setMeshRevision((value) => value + 1);
   }, [uploadPath]);
 
+  const syncMeshOverlayVolumes = useCallback(async () => {
+    const state = meshVolumeStateRef.current;
+    if (!state || !state.overlayLoader) return;
+    const items = meshOverlayItemsRef.current.filter(
+      (item) => item.renderMode !== "mesh"
+    );
+    const normalizeVector = (
+      value: MeshOverlayItem["position"] | MeshOverlayItem["rotation"]
+    ): [number, number, number] => {
+      if (Array.isArray(value) && value.length === 3) {
+        return [Number(value[0]) || 0, Number(value[1]) || 0, Number(value[2]) || 0];
+      }
+      return [0, 0, 0];
+    };
+    const applyOverlayTransform = (
+      overlay: MeshOverlayVolume,
+      item: MeshOverlayItem
+    ) => {
+      const position = normalizeVector(item.position);
+      const rotation = normalizeVector(item.rotation);
+      const maxDim = Math.max(
+        overlay.dimensions[0] * overlay.spacing[0],
+        overlay.dimensions[1] * overlay.spacing[1],
+        overlay.dimensions[2] * overlay.spacing[2]
+      ) || 1;
+      const explodeDistance =
+        (item.explodeDistance ?? 0) * Math.max(1, maxDim);
+      const len = Math.hypot(position[0], position[1], position[2]);
+      const direction: [number, number, number] =
+        len > 0.0001
+          ? [position[0] / len, position[1] / len, position[2] / len]
+          : [0, 0, 1];
+      const finalPosition =
+        item.explodeEnabled
+          ? [
+              position[0] + direction[0] * explodeDistance,
+              position[1] + direction[1] * explodeDistance,
+              position[2] + direction[2] * explodeDistance,
+            ]
+          : position;
+      if (typeof overlay.volume?.setPosition === "function") {
+        overlay.volume.setPosition(
+          finalPosition[0],
+          finalPosition[1],
+          finalPosition[2]
+        );
+      }
+      if (typeof overlay.volume?.setOrientation === "function") {
+        overlay.volume.setOrientation(rotation[0], rotation[1], rotation[2]);
+      }
+      overlay.position = position;
+      overlay.rotation = rotation;
+      overlay.explodeEnabled = item.explodeEnabled ?? false;
+      overlay.explodeDistance = item.explodeDistance ?? 0.25;
+    };
+    const applyOverlayClip = (
+      overlay: MeshOverlayVolume,
+      item: MeshOverlayItem
+    ) => {
+      if (typeof overlay.mapper?.removeAllClippingPlanes === "function") {
+        overlay.mapper.removeAllClippingPlanes();
+      }
+      if (!item.clipEnabled) {
+        overlay.clipPlane = null;
+        overlay.clipEnabled = false;
+        return;
+      }
+      const vtkPlane = vtkPlaneRef.current;
+      if (!vtkPlane) return;
+      const plane = overlay.clipPlane ?? vtkPlane.newInstance();
+      const [dx, dy, dz] = overlay.dimensions;
+      const [sx, sy, sz] = overlay.spacing;
+      const maxX = dx * sx;
+      const maxY = dy * sy;
+      const maxZ = dz * sz;
+      const value = Math.max(0, Math.min(item.clipValue ?? 0.5, 1));
+      if (item.clipAxis === "x") {
+        plane.setNormal(1, 0, 0);
+        plane.setOrigin(maxX * value, 0, 0);
+      } else if (item.clipAxis === "y") {
+        plane.setNormal(0, 1, 0);
+        plane.setOrigin(0, maxY * value, 0);
+      } else {
+        plane.setNormal(0, 0, 1);
+        plane.setOrigin(0, 0, maxZ * value);
+      }
+      if (typeof overlay.mapper?.addClippingPlane === "function") {
+        overlay.mapper.addClippingPlane(plane);
+      }
+      overlay.clipPlane = plane;
+      overlay.clipEnabled = true;
+      overlay.clipAxis = item.clipAxis ?? "z";
+      overlay.clipValue = value;
+    };
+    const overlayMap =
+      state.overlayVolumes ?? new Map<string, MeshOverlayVolume>();
+    state.overlayVolumes = overlayMap;
+    const activeIds = new Set(items.map((item) => item.id));
+
+    overlayMap.forEach((overlay, id) => {
+      if (activeIds.has(id)) return;
+      if (typeof state.renderer.removeVolume === "function") {
+        state.renderer.removeVolume(overlay.volume);
+      }
+      overlay.volume?.delete?.();
+      overlay.mapper?.delete?.();
+      overlay.ctfun?.delete?.();
+      overlay.ofun?.delete?.();
+      overlayMap.delete(id);
+    });
+
+    const getMaterialPreset = (item: MeshOverlayItem): OverlayMaterialPreset =>
+      item.materialPreset ?? "brain";
+
+    const orderedVolumes = items.slice().reverse();
+
+    if (typeof state.renderer.removeVolume === "function") {
+      if (state.volume) {
+        state.renderer.removeVolume(state.volume);
+      }
+      overlayMap.forEach((overlay) => {
+        state.renderer.removeVolume(overlay.volume);
+      });
+    }
+
+    if (state.volume && typeof state.renderer.addVolume === "function") {
+      state.renderer.addVolume(state.volume);
+    }
+    for (const item of orderedVolumes) {
+      let overlay = overlayMap.get(item.id);
+      if (!overlay) {
+        try {
+          overlay = await state.overlayLoader({
+            ...item,
+            materialPreset: getMaterialPreset(item),
+          });
+          overlayMap.set(item.id, overlay);
+        } catch (err) {
+          console.warn("Overlay volume failed", err);
+          continue;
+        }
+      }
+      if (
+        overlay.materialPreset !== getMaterialPreset(item) ||
+        overlay.opacity !== item.opacity
+      ) {
+        applyOverlayTransfer(
+          overlay.ctfun,
+          overlay.ofun,
+          overlay.dataRange,
+          getMaterialPreset(item),
+          item.opacity
+        );
+        const property = overlay.volume?.getProperty?.();
+        property?.setRGBTransferFunction?.(0, overlay.ctfun);
+        property?.setScalarOpacity?.(0, overlay.ofun);
+        overlay.materialPreset = getMaterialPreset(item);
+        overlay.opacity = item.opacity;
+      }
+      applyOverlayTransform(overlay, item);
+      applyOverlayClip(overlay, item);
+      if (typeof overlay.volume?.setVisibility === "function") {
+        overlay.volume.setVisibility(item.visible);
+      }
+      overlay.visible = item.visible;
+      overlay.layer = "overlay";
+      if (typeof state.renderer.addVolume === "function") {
+        state.renderer.addVolume(overlay.volume);
+      }
+    }
+    if (!state.volume && typeof state.renderer.resetCamera === "function") {
+      state.renderer.resetCamera();
+    }
+    state.renderWindow.render();
+  }, [applyOverlayTransfer]);
+
+  const syncMeshOverlayMeshes = useCallback(async () => {
+    const state = meshStateRef.current;
+    if (!state?.three || !state?.plyLoader) return;
+    const orderedItems = meshOverlayItemsRef.current.filter(
+      (item) => item.renderMode === "mesh"
+    );
+    const overlayOrderMap = new Map<string, number>();
+    orderedItems.forEach((item, index) => {
+      overlayOrderMap.set(item.id, index);
+    });
+    const getStackOrder = (item: MeshOverlayItem) => {
+      const index = overlayOrderMap.get(item.id) ?? 0;
+      return {
+        isOverlay: true,
+        rank: Math.max(1, orderedItems.length - index),
+      };
+    };
+    const toRadians = (value: number) => (value * Math.PI) / 180;
+    const normalizeVector = (
+      value: MeshOverlayItem["position"] | MeshOverlayItem["rotation"]
+    ): [number, number, number] => {
+      if (Array.isArray(value) && value.length === 3) {
+        return [Number(value[0]) || 0, Number(value[1]) || 0, Number(value[2]) || 0];
+      }
+      return [0, 0, 0];
+    };
+    const applyClip = (
+      material: any,
+      bounds: { min: [number, number, number]; max: [number, number, number] },
+      item: MeshOverlayItem
+    ) => {
+      const enabled = item.clipEnabled ?? false;
+      if (!enabled) {
+        material.clippingPlanes = [];
+        material.needsUpdate = true;
+        return;
+      }
+      const axis = item.clipAxis ?? "z";
+      const axisIndex = axis === "x" ? 0 : axis === "y" ? 1 : 2;
+      const value = Math.max(0, Math.min(item.clipValue ?? 0.5, 1));
+      const min = bounds.min[axisIndex];
+      const max = bounds.max[axisIndex];
+      const planeValue = min + (max - min) * value;
+      const normal =
+        axis === "x"
+          ? new state.three.Vector3(1, 0, 0)
+          : axis === "y"
+            ? new state.three.Vector3(0, 1, 0)
+            : new state.three.Vector3(0, 0, 1);
+      const point = new state.three.Vector3(
+        axis === "x" ? planeValue : 0,
+        axis === "y" ? planeValue : 0,
+        axis === "z" ? planeValue : 0
+      );
+      const plane = new state.three.Plane();
+      plane.setFromNormalAndCoplanarPoint(normal, point);
+      material.clippingPlanes = [plane];
+      material.needsUpdate = true;
+    };
+    const applyTransform = (
+      mesh: any,
+      item: MeshOverlayItem,
+      direction?: [number, number, number]
+    ) => {
+      const position = normalizeVector(item.position);
+      const rotation = normalizeVector(item.rotation);
+      const explodeEnabled = item.explodeEnabled ?? false;
+      const explodeDistance =
+        (item.explodeDistance ?? 0) * Math.max(1, state.maxDim ?? 1);
+      const dir = direction ?? ([0, 0, 1] as [number, number, number]);
+      const finalPosition = explodeEnabled
+        ? [
+            position[0] + dir[0] * explodeDistance,
+            position[1] + dir[1] * explodeDistance,
+            position[2] + dir[2] * explodeDistance,
+          ]
+        : position;
+      mesh.position.set(finalPosition[0], finalPosition[1], finalPosition[2]);
+      mesh.rotation.set(
+        toRadians(rotation[0]),
+        toRadians(rotation[1]),
+        toRadians(rotation[2])
+      );
+      return { position, rotation, finalPosition };
+    };
+    const items = meshOverlayItemsRef.current.filter(
+      (item) => item.renderMode === "mesh"
+    );
+    const syncId = (meshOverlayMeshSyncRef.current += 1);
+
+    if (!state.overlayStackGroup) {
+      state.overlayStackGroup = new state.three.Group();
+      state.overlayStackGroup.name = "overlayStackGroup";
+      state.scene.add(state.overlayStackGroup);
+    }
+    if (!state.overlayStackMeshes) {
+      state.overlayStackMeshes = new Map();
+    }
+
+    const overlayGroup = state.overlayStackGroup;
+    const overlayMap = state.overlayStackMeshes;
+    const activeIds = new Set(items.map((item) => item.id));
+
+    overlayMap.forEach((entry, id) => {
+      if (activeIds.has(id)) return;
+      overlayGroup.remove(entry.mesh);
+      entry.mesh.geometry?.dispose?.();
+      entry.material.dispose?.();
+      overlayMap.delete(id);
+    });
+
+    for (const item of items) {
+      if (meshOverlayMeshSyncRef.current !== syncId) return;
+      const existing = overlayMap.get(item.id);
+      const needsReload =
+        !existing ||
+        existing.path !== item.path ||
+        existing.iso !== meshOverlayIso ||
+        existing.step !== meshOverlayStep ||
+        existing.channel !== viewerChannel;
+
+      if (needsReload) {
+        if (existing) {
+          overlayGroup.remove(existing.mesh);
+          existing.mesh.geometry?.dispose?.();
+          existing.material.dispose?.();
+          overlayMap.delete(item.id);
+        }
+        try {
+          const url = buildMeshUrl(
+            item.path,
+            meshOverlayIso,
+            meshOverlayStep,
+            viewerChannel
+          );
+          if (!url) continue;
+          const response = await apiFetch(url);
+          if (!response.ok) {
+            throw new Error(
+              `Overlay mesh download failed (${response.status})`
+            );
+          }
+          const buffer = await response.arrayBuffer();
+          if (meshOverlayMeshSyncRef.current !== syncId) return;
+          const loader = new state.plyLoader();
+          const rawGeometry = loader.parse(buffer);
+          const geometry = rawGeometry.index
+            ? rawGeometry.toNonIndexed()
+            : rawGeometry;
+          geometry.computeVertexNormals();
+          geometry.computeBoundingBox();
+          const overlayBounds = geometry.boundingBox
+            ? geometry.boundingBox.clone()
+            : new state.three.Box3().setFromBufferAttribute(
+                geometry.attributes.position
+              );
+          const overlayCenter = overlayBounds.getCenter(
+            new state.three.Vector3()
+          );
+          const directionVec = overlayCenter.clone();
+          if (directionVec.length() < 0.0001) {
+            directionVec.set(0, 0, 1);
+          } else {
+            directionVec.normalize();
+          }
+          geometry.translate(
+            -overlayCenter.x,
+            -overlayCenter.y,
+            -overlayCenter.z
+          );
+          geometry.computeBoundingBox();
+          const overlayBoundsFinal = geometry.boundingBox
+            ? geometry.boundingBox.clone()
+            : new state.three.Box3().setFromBufferAttribute(
+                geometry.attributes.position
+              );
+          const overlayBoundsPayload = {
+            min: [
+              overlayBoundsFinal.min.x,
+              overlayBoundsFinal.min.y,
+              overlayBoundsFinal.min.z,
+            ] as [number, number, number],
+            max: [
+              overlayBoundsFinal.max.x,
+              overlayBoundsFinal.max.y,
+              overlayBoundsFinal.max.z,
+            ] as [number, number, number],
+          };
+          const preset = MESH_MATERIAL_PRESETS[item.materialPreset ?? "brain"];
+          const color = new state.three.Color(preset.color);
+          const emissive = new state.three.Color(preset.emissive ?? 0x000000);
+          const { isOverlay, rank } = getStackOrder(item);
+          const meshOpacityValue = Math.max(0.1, Math.min(1, item.opacity));
+          const baseTransmission = preset.transmission ?? 0;
+          const transmission = meshVolumeEnabled
+            ? baseTransmission * 0.35
+            : baseTransmission;
+          const transparent = meshOpacityValue < 1 || transmission > 0;
+          const material = new state.three.MeshPhysicalMaterial({
+            color,
+            emissive,
+            roughness: preset.roughness,
+            metalness: preset.metalness,
+            clearcoat: preset.clearcoat ?? 0,
+            clearcoatRoughness: preset.clearcoatRoughness ?? 0,
+            transmission,
+            thickness: preset.thickness ?? 0,
+            ior: preset.ior ?? 1.5,
+            sheen: preset.sheen ?? 0,
+            sheenColor: new state.three.Color(preset.sheenColor ?? 0x000000),
+            transparent,
+            opacity: meshOpacityValue,
+            polygonOffset: true,
+            polygonOffsetFactor: isOverlay ? -1 : 1,
+            polygonOffsetUnits: isOverlay ? -1 : 1,
+            side: state.three.DoubleSide,
+          });
+          const mesh = new state.three.Mesh(geometry, material);
+          mesh.renderOrder = isOverlay ? 10 + rank : -10 - rank;
+          mesh.visible = item.visible;
+          mesh.frustumCulled = false;
+          const { position, rotation } = applyTransform(mesh, item, [
+            directionVec.x,
+            directionVec.y,
+            directionVec.z,
+          ]);
+          applyClip(material, overlayBoundsPayload, item);
+          overlayGroup.add(mesh);
+          overlayMap.set(item.id, {
+            mesh,
+            material,
+            path: item.path,
+            materialPreset: item.materialPreset ?? "brain",
+            opacity: item.opacity,
+            visible: item.visible,
+            iso: meshOverlayIso,
+            step: meshOverlayStep,
+            channel: viewerChannel,
+            layer: "overlay",
+            position,
+            rotation,
+            direction: [directionVec.x, directionVec.y, directionVec.z],
+            clipEnabled: item.clipEnabled ?? false,
+            clipAxis: item.clipAxis ?? "z",
+            clipValue: item.clipValue ?? 0.5,
+            explodeEnabled: item.explodeEnabled ?? false,
+            explodeDistance: item.explodeDistance ?? 0.25,
+          });
+        } catch (err) {
+          console.warn("Overlay mesh load failed", err);
+        }
+        continue;
+      }
+
+      if (existing) {
+        if (
+          existing.materialPreset !== (item.materialPreset ?? "brain") ||
+          existing.opacity !== item.opacity
+        ) {
+          const preset = MESH_MATERIAL_PRESETS[item.materialPreset ?? "brain"];
+          const color = new state.three.Color(preset.color);
+          const emissive = new state.three.Color(preset.emissive ?? 0x000000);
+          existing.material.color.copy(color);
+          existing.material.emissive.copy(emissive);
+          const meshOpacityValue = Math.max(0.1, Math.min(1, item.opacity));
+          const baseTransmission = preset.transmission ?? 0;
+          const transmission = meshVolumeEnabled
+            ? baseTransmission * 0.35
+            : baseTransmission;
+          existing.material.roughness = preset.roughness;
+          existing.material.metalness = preset.metalness;
+          existing.material.clearcoat = preset.clearcoat ?? 0;
+          existing.material.clearcoatRoughness = preset.clearcoatRoughness ?? 0;
+          existing.material.transmission = transmission;
+          existing.material.thickness = preset.thickness ?? 0;
+          existing.material.ior = preset.ior ?? 1.5;
+          existing.material.sheen = preset.sheen ?? 0;
+          existing.material.sheenColor = new state.three.Color(
+            preset.sheenColor ?? 0x000000
+          );
+          existing.material.opacity = meshOpacityValue;
+          existing.material.transparent =
+            meshOpacityValue < 1 || transmission > 0;
+          existing.material.needsUpdate = true;
+          existing.materialPreset = item.materialPreset ?? "brain";
+          existing.opacity = item.opacity;
+        }
+        const { rank } = getStackOrder(item);
+        const nextRenderOrder = 10 + rank;
+        if (existing.mesh.renderOrder !== nextRenderOrder) {
+          existing.mesh.renderOrder = nextRenderOrder;
+        }
+        const direction = existing.direction ?? [0, 0, 1];
+        const { position, rotation } = applyTransform(
+          existing.mesh,
+          item,
+          direction
+        );
+        existing.position = position;
+        existing.rotation = rotation;
+        existing.explodeEnabled = item.explodeEnabled ?? false;
+        existing.explodeDistance = item.explodeDistance ?? 0.25;
+        const geometryBounds = existing.mesh.geometry?.boundingBox
+          ? existing.mesh.geometry.boundingBox
+          : null;
+        if (geometryBounds) {
+          applyClip(
+            existing.material,
+            {
+              min: [
+                geometryBounds.min.x,
+                geometryBounds.min.y,
+                geometryBounds.min.z,
+              ],
+              max: [
+                geometryBounds.max.x,
+                geometryBounds.max.y,
+                geometryBounds.max.z,
+              ],
+            },
+            item
+          );
+          existing.clipEnabled = item.clipEnabled ?? false;
+          existing.clipAxis = item.clipAxis ?? "z";
+          existing.clipValue = item.clipValue ?? 0.5;
+        }
+        if (existing.visible !== item.visible) {
+          existing.mesh.visible = item.visible;
+          existing.visible = item.visible;
+        }
+      }
+    }
+  }, [
+    apiFetch,
+    buildMeshUrl,
+    meshOverlayIso,
+    meshOverlayStep,
+    viewerChannel,
+  ]);
+
   const clearMeshSelection = useCallback(() => {
     const state = meshStateRef.current;
     if (!state?.selection) {
       setMeshSelectionCount(0);
+      setMeshPickedLabel("");
       return;
     }
     const overlay = state.selection.overlay;
@@ -1304,7 +2893,195 @@ export default function App() {
     }
     state.selection = undefined;
     setMeshSelectionCount(0);
+    setMeshPickedLabel("");
   }, []);
+
+  const buildMeshPartLabel = useCallback((partIndex: number) => {
+    const state = meshStateRef.current;
+    if (!state) return `Part ${partIndex + 1}`;
+    const part = state.meshParts[partIndex];
+    if (!part) return `Part ${partIndex + 1}`;
+    const [minX, minY, minZ] = state.bounds.min;
+    const [maxX, maxY, maxZ] = state.bounds.max;
+    const centerX = (minX + maxX) / 2;
+    const centerY = (minY + maxY) / 2;
+    const centerZ = (minZ + maxZ) / 2;
+    const sizeX = Math.max(0.0001, maxX - minX);
+    const sizeY = Math.max(0.0001, maxY - minY);
+    const sizeZ = Math.max(0.0001, maxZ - minZ);
+    const dx = (part.center[0] - centerX) / sizeX;
+    const dy = (part.center[1] - centerY) / sizeY;
+    const dz = (part.center[2] - centerZ) / sizeZ;
+    const regionParts: string[] = [];
+    const threshold = 0.18;
+    if (Math.abs(dx) >= threshold) {
+      regionParts.push(dx > 0 ? "Right" : "Left");
+    }
+    if (Math.abs(dy) >= threshold) {
+      regionParts.push(dy > 0 ? "Anterior" : "Posterior");
+    }
+    if (Math.abs(dz) >= threshold) {
+      regionParts.push(dz > 0 ? "Superior" : "Inferior");
+    }
+    const region = regionParts.length ? regionParts.join(" / ") : "Central";
+    const labelBase =
+      state.meshParts.length > 1 ? `Part ${partIndex + 1}` : "Mesh";
+    return `${labelBase} \u00b7 ${region}`;
+  }, []);
+
+  const clearMeshLabel = useCallback(() => {
+    const state = meshStateRef.current;
+    if (!state) return;
+    if (state.labelLine) {
+      state.labelLine.removeFromParent();
+      state.labelLine.geometry?.dispose?.();
+      state.labelLine.material?.dispose?.();
+      state.labelLine = undefined;
+    }
+    if (state.labelSprite) {
+      state.labelSprite.removeFromParent();
+      const material = state.labelSprite.material as any;
+      if (material?.map) {
+        material.map.dispose?.();
+      }
+      material?.dispose?.();
+      state.labelSprite = undefined;
+    }
+    if (state.labelGroup) {
+      state.labelGroup.removeFromParent();
+      state.labelGroup = undefined;
+    }
+    state.labelPartIndex = undefined;
+    setMeshPickedLabel("");
+  }, []);
+
+  const updateMeshLabelPosition = useCallback(() => {
+    const state = meshStateRef.current;
+    if (!state || state.labelPartIndex == null) return;
+    const part = state.meshParts[state.labelPartIndex];
+    if (!part || !state.labelLine || !state.labelSprite) return;
+    const { three: THREE } = state;
+    const anchor = new THREE.Vector3(
+      part.center[0],
+      part.center[1],
+      part.center[2]
+    ).add(part.mesh.position);
+    const offsetDistance = state.maxDim * 0.65;
+    const labelPos = new THREE.Vector3(
+      part.direction[0],
+      part.direction[1],
+      part.direction[2]
+    )
+      .multiplyScalar(offsetDistance)
+      .add(anchor);
+
+    const positions = new Float32Array([
+      anchor.x,
+      anchor.y,
+      anchor.z,
+      labelPos.x,
+      labelPos.y,
+      labelPos.z,
+    ]);
+    state.labelLine.geometry?.setAttribute(
+      "position",
+      new THREE.BufferAttribute(positions, 3)
+    );
+    state.labelLine.geometry?.computeBoundingSphere?.();
+    state.labelSprite.position.copy(labelPos);
+  }, []);
+
+  const createMeshLabel = useCallback(
+    (partIndex: number) => {
+      const state = meshStateRef.current;
+      if (!state) return;
+      if (!meshLabelEnabled) return;
+      const part = state.meshParts[partIndex];
+      if (!part) return;
+      const { three: THREE, scene } = state;
+      const labelText = buildMeshPartLabel(partIndex);
+      clearMeshLabel();
+
+      const canvas = document.createElement("canvas");
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+      const paddingX = 32;
+      const paddingY = 18;
+      const fontSize = 28;
+      ctx.font = `600 ${fontSize}px "Space Grotesk", sans-serif`;
+      const metrics = ctx.measureText(labelText);
+      const textWidth = Math.ceil(metrics.width);
+      const width = textWidth + paddingX * 2;
+      const height = fontSize + paddingY * 2;
+      const ratio = window.devicePixelRatio || 1;
+      canvas.width = Math.ceil(width * ratio);
+      canvas.height = Math.ceil(height * ratio);
+      ctx.scale(ratio, ratio);
+      ctx.font = `600 ${fontSize}px "Space Grotesk", sans-serif`;
+      ctx.fillStyle = "rgba(10, 18, 30, 0.75)";
+      ctx.strokeStyle = "rgba(56, 189, 248, 0.8)";
+      ctx.lineWidth = 2;
+      const radius = 14;
+      ctx.beginPath();
+      ctx.moveTo(radius, 0);
+      ctx.lineTo(width - radius, 0);
+      ctx.quadraticCurveTo(width, 0, width, radius);
+      ctx.lineTo(width, height - radius);
+      ctx.quadraticCurveTo(width, height, width - radius, height);
+      ctx.lineTo(radius, height);
+      ctx.quadraticCurveTo(0, height, 0, height - radius);
+      ctx.lineTo(0, radius);
+      ctx.quadraticCurveTo(0, 0, radius, 0);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = "#e2f3ff";
+      ctx.fillText(labelText, paddingX, paddingY + fontSize * 0.8);
+
+      const texture = new THREE.CanvasTexture(canvas);
+      texture.needsUpdate = true;
+      const spriteMaterial = new THREE.SpriteMaterial({
+        map: texture,
+        transparent: true,
+        depthTest: false,
+        depthWrite: false,
+      });
+      const sprite = new THREE.Sprite(spriteMaterial);
+      const scaleBase = state.maxDim * 0.2;
+      const aspect = width / height;
+      sprite.scale.set(scaleBase * aspect, scaleBase, 1);
+      sprite.center.set(0, 0.5);
+
+      const lineMaterial = new THREE.LineBasicMaterial({
+        color: new THREE.Color(0x38bdf8),
+        transparent: true,
+        opacity: 0.85,
+        depthTest: false,
+      });
+      const lineGeometry = new THREE.BufferGeometry();
+      const line = new THREE.Line(lineGeometry, lineMaterial);
+      line.renderOrder = 5;
+      sprite.renderOrder = 6;
+
+      const labelGroup = new THREE.Group();
+      labelGroup.add(line);
+      labelGroup.add(sprite);
+      scene.add(labelGroup);
+
+      state.labelGroup = labelGroup;
+      state.labelLine = line;
+      state.labelSprite = sprite;
+      state.labelPartIndex = partIndex;
+      setMeshPickedLabel(labelText);
+      updateMeshLabelPosition();
+    },
+    [
+      buildMeshPartLabel,
+      clearMeshLabel,
+      meshLabelEnabled,
+      updateMeshLabelPosition,
+    ]
+  );
 
   const rebuildMeshSelectionOverlay = useCallback(
     (partIndex: number, indices: Set<number>) => {
@@ -1354,8 +3131,9 @@ export default function App() {
       state.activePartIndex = partIndex;
       setMeshActiveGroup(partIndex);
       setMeshSelectionCount(indices.size);
+      setMeshPickedLabel(buildMeshPartLabel(partIndex));
     },
-    []
+    [buildMeshPartLabel]
   );
 
   const nudgeMeshSelection = useCallback((direction: number) => {
@@ -1409,6 +3187,12 @@ export default function App() {
     },
     [meshPartCount]
   );
+
+  useEffect(() => {
+    if (!meshLabelEnabled) {
+      clearMeshLabel();
+    }
+  }, [meshLabelEnabled, clearMeshLabel]);
 
   const updateActivePartOffset = useCallback(
     (value: number) => {
@@ -1540,7 +3324,7 @@ export default function App() {
         interactor.initialize();
         interactor.bindEvents(container);
 
-        renderer.setBackground(0.97, 0.98, 1);
+        renderer.setBackground([0.97, 0.98, 1]);
 
         const response = await apiFetch(buildVolumeFileUrl());
         if (!response.ok) {
@@ -1655,6 +3439,15 @@ export default function App() {
 
         const volume = vtkVolume.newInstance();
         volume.setMapper(volumeMapper);
+        volume.setVisibility(workspaceItemVisibleRef.current);
+        if (typeof volume.setPosition === "function") {
+          const { position } = workspaceTransformRef.current;
+          volume.setPosition(position[0], position[1], position[2]);
+        }
+        if (typeof volume.setOrientation === "function") {
+          const { rotation } = workspaceTransformRef.current;
+          volume.setOrientation(rotation[0], rotation[1], rotation[2]);
+        }
 
         const ctfun = vtkColorTransferFunction.newInstance();
         const ofun = vtkPiecewiseFunction.newInstance();
@@ -1706,7 +3499,7 @@ export default function App() {
 
         const resize = () => {
           const bounds = container.getBoundingClientRect();
-          const dpr = window.devicePixelRatio || 1;
+          const dpr = Math.min(window.devicePixelRatio || 1, 1.25);
           openGLRenderWindow.setSize(
             Math.max(1, Math.floor(bounds.width * dpr)),
             Math.max(1, Math.floor(bounds.height * dpr))
@@ -1804,10 +3597,22 @@ export default function App() {
 
     let cancelled = false;
     setMeshError("");
-    setMeshLoading(true);
+    setMeshLoading(false);
 
     const container = meshViewerRef.current;
     container.replaceChildren();
+    const shell = document.createElement("div");
+    shell.className = "mesh-hybrid-shell";
+    const meshLayer = document.createElement("div");
+    meshLayer.className = "mesh-hybrid-layer mesh-hybrid-layer-mesh";
+    let volumeLayer: HTMLDivElement | null = null;
+    if (meshVolumeEnabled) {
+      volumeLayer = document.createElement("div");
+      volumeLayer.className = "mesh-hybrid-layer mesh-hybrid-layer-volume";
+      shell.appendChild(volumeLayer);
+    }
+    shell.appendChild(meshLayer);
+    container.appendChild(shell);
 
     const initMeshViewer = async () => {
       try {
@@ -1834,13 +3639,15 @@ export default function App() {
           antialias: true,
           alpha: true,
         });
-        renderer.setPixelRatio(window.devicePixelRatio || 1);
-        renderer.setClearColor(0x0b0b0b, 1);
+        const maxDpr = 1.25;
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, maxDpr));
+        const hasVolumeUnderlay = Boolean(volumeLayer);
+        renderer.setClearColor(0x0b0b0b, hasVolumeUnderlay ? 0 : 1);
         renderer.localClippingEnabled = true;
-        container.appendChild(renderer.domElement);
+        meshLayer.appendChild(renderer.domElement);
 
         const scene = new THREE.Scene();
-        scene.background = new THREE.Color(0x0b0b0b);
+        scene.background = hasVolumeUnderlay ? null : new THREE.Color(0x0b0b0b);
 
         const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 2000);
         camera.position.set(0, 0, 8);
@@ -1859,7 +3666,389 @@ export default function App() {
         rimLight.position.set(-8, 4, -6);
         scene.add(ambient, keyLight, fillLight, rimLight);
 
+        let meshVolumeResize: (() => void) | null = null;
+        let meshVolumeCleanup: (() => void) | null = null;
+        if (volumeLayer) {
+          const initMeshVolumeUnderlay = async () => {
+            const vtkRenderWindowModule = await import(
+              "vtk.js/Sources/Rendering/Core/RenderWindow"
+            );
+            const vtkRendererModule = await import(
+              "vtk.js/Sources/Rendering/Core/Renderer"
+            );
+            // @ts-expect-error vtk.js OpenGL bindings ship without types
+            await import("vtk.js/Sources/Rendering/OpenGL/Renderer");
+            // @ts-expect-error vtk.js OpenGL bindings ship without types
+            await import("vtk.js/Sources/Rendering/OpenGL/Camera");
+            const vtkOpenGLRenderWindowModule = await import(
+              "vtk.js/Sources/Rendering/OpenGL/RenderWindow"
+            );
+            // @ts-expect-error vtk.js OpenGL bindings ship without types
+            await import("vtk.js/Sources/Rendering/OpenGL/Volume");
+            // @ts-expect-error vtk.js OpenGL bindings ship without types
+            await import("vtk.js/Sources/Rendering/OpenGL/VolumeMapper");
+            const vtkRenderWindowInteractorModule = await import(
+              "vtk.js/Sources/Rendering/Core/RenderWindowInteractor"
+            );
+            const vtkInteractorStyleTrackballCameraModule = await import(
+              "vtk.js/Sources/Interaction/Style/InteractorStyleTrackballCamera"
+            );
+            const vtkVolumeModule = await import(
+              "vtk.js/Sources/Rendering/Core/Volume"
+            );
+            const vtkVolumeMapperModule = await import(
+              "vtk.js/Sources/Rendering/Core/VolumeMapper"
+            );
+            const vtkColorTransferFunctionModule = await import(
+              "vtk.js/Sources/Rendering/Core/ColorTransferFunction"
+            );
+            const vtkPiecewiseFunctionModule = await import(
+              "vtk.js/Sources/Common/DataModel/PiecewiseFunction"
+            );
+            const vtkImageDataModule = await import(
+              "vtk.js/Sources/Common/DataModel/ImageData"
+            );
+            const vtkDataArrayModule = await import(
+              "vtk.js/Sources/Common/Core/DataArray"
+            );
+            const niftiModule = await import("nifti-reader-js");
+
+            if (cancelled || !volumeLayer) return null;
+
+            const vtkRenderWindow = vtkRenderWindowModule.default;
+            const vtkRenderer = vtkRendererModule.default;
+            const vtkOpenGLRenderWindow = vtkOpenGLRenderWindowModule.default;
+            const vtkRenderWindowInteractor =
+              vtkRenderWindowInteractorModule.default;
+            const vtkInteractorStyleTrackballCamera =
+              vtkInteractorStyleTrackballCameraModule.default;
+            const vtkVolume = vtkVolumeModule.default;
+            const vtkVolumeMapper = vtkVolumeMapperModule.default;
+            const vtkColorTransferFunction =
+              vtkColorTransferFunctionModule.default;
+            const vtkPiecewiseFunction = vtkPiecewiseFunctionModule.default;
+            const vtkImageData = vtkImageDataModule.default;
+            const vtkDataArray = vtkDataArrayModule.default;
+            const nifti = niftiModule;
+
+            const renderWindow = vtkRenderWindow.newInstance();
+            const renderer = vtkRenderer.newInstance();
+            renderWindow.addRenderer(renderer);
+
+            const openGLRenderWindow = vtkOpenGLRenderWindow.newInstance();
+            openGLRenderWindow.setContainer(volumeLayer);
+            renderWindow.addView(openGLRenderWindow);
+
+            const interactor = vtkRenderWindowInteractor.newInstance();
+            interactor.setView(openGLRenderWindow);
+            interactor.setInteractorStyle(
+              vtkInteractorStyleTrackballCamera.newInstance()
+            );
+            interactor.initialize();
+
+            renderer.setBackground([0.05, 0.06, 0.08]);
+
+            const toArrayBuffer = (data: ArrayBufferLike): ArrayBuffer => {
+              if (data instanceof ArrayBuffer) return data;
+              return new Uint8Array(data).slice().buffer;
+            };
+            const parseNiftiBuffer = (sourceBuffer: ArrayBuffer) => {
+              let buffer = sourceBuffer;
+              if (nifti.isCompressed(buffer)) {
+                buffer = toArrayBuffer(
+                  nifti.decompress(buffer) as ArrayBufferLike
+                );
+              }
+              if (!nifti.isNIFTI(buffer)) {
+                throw new Error("Unsupported volume file format.");
+              }
+              const header = nifti.readHeader(buffer);
+              const image = nifti.readImage(header, buffer);
+              const datatype = header.datatypeCode;
+              const slope =
+                typeof header.scl_slope === "number" && header.scl_slope !== 0
+                  ? header.scl_slope
+                  : 1;
+              const intercept =
+                typeof header.scl_inter === "number" ? header.scl_inter : 0;
+              const volumeSize =
+                Number(header.dims[1]) *
+                Number(header.dims[2]) *
+                Number(header.dims[3]);
+              const makeArray = () => {
+                switch (datatype) {
+                  case nifti.NIFTI1.TYPE_UINT8:
+                    return new Uint8Array(image);
+                  case nifti.NIFTI1.TYPE_INT16:
+                    return new Int16Array(image);
+                  case nifti.NIFTI1.TYPE_INT32:
+                    return new Int32Array(image);
+                  case nifti.NIFTI1.TYPE_FLOAT32:
+                    return new Float32Array(image);
+                  case nifti.NIFTI1.TYPE_FLOAT64:
+                    return new Float64Array(image);
+                  case nifti.NIFTI1.TYPE_INT8:
+                    return new Int8Array(image);
+                  case nifti.NIFTI1.TYPE_UINT16:
+                    return new Uint16Array(image);
+                  case nifti.NIFTI1.TYPE_UINT32:
+                    return new Uint32Array(image);
+                  case nifti.NIFTI1.TYPE_INT64:
+                    return new BigInt64Array(image);
+                  case nifti.NIFTI1.TYPE_UINT64:
+                    return new BigUint64Array(image);
+                  default:
+                    throw new Error(`Unsupported NIfTI datatype: ${datatype}`);
+                }
+              };
+              const rawArray = makeArray();
+              const sliced =
+                rawArray.length > volumeSize
+                  ? rawArray.subarray(0, volumeSize)
+                  : rawArray;
+              const floatArray = new Float32Array(sliced.length);
+              for (let i = 0; i < sliced.length; i += 1) {
+                const value = sliced[i] as number | bigint;
+                const numeric =
+                  typeof value === "bigint" ? Number(value) : value;
+                floatArray[i] = numeric * slope + intercept;
+              }
+              const dimensions: [number, number, number] = [
+                Number(header.dims[1]),
+                Number(header.dims[2]),
+                Number(header.dims[3]),
+              ];
+              const spacing: [number, number, number] = [
+                Number(header.pixDims[1] || 1),
+                Number(header.pixDims[2] || 1),
+                Number(header.pixDims[3] || 1),
+              ];
+              const imageData = vtkImageData.newInstance();
+              imageData.setDimensions(dimensions);
+              imageData.setSpacing(spacing);
+              imageData.setOrigin([
+                -(dimensions[0] * spacing[0]) / 2,
+                -(dimensions[1] * spacing[1]) / 2,
+                -(dimensions[2] * spacing[2]) / 2,
+              ]);
+              const scalars = vtkDataArray.newInstance({
+                name: "Scalars",
+                numberOfComponents: 1,
+                values: floatArray,
+              });
+              imageData.getPointData().setScalars(scalars);
+              const dataRange = scalars.getRange();
+              return { imageData, dataRange, dimensions, spacing };
+            };
+
+            const createOverlayVolume = async (item: MeshOverlayItem) => {
+              const response = await apiFetch(
+                buildVolumeFileUrlFor(item.path, 0)
+              );
+              if (!response.ok) {
+                throw new Error(
+                  `Overlay volume download failed (${response.status})`
+                );
+              }
+              const buffer = await response.arrayBuffer();
+              const parsed = parseNiftiBuffer(buffer);
+              const volumeMapper = vtkVolumeMapper.newInstance();
+              volumeMapper.setSampleDistance(1.1);
+              volumeMapper.setInputData(parsed.imageData);
+              const volume = vtkVolume.newInstance();
+              volume.setMapper(volumeMapper);
+              volume.setVisibility(workspaceItemVisibleRef.current);
+              if (typeof volume.setPosition === "function") {
+                const { position } = workspaceTransformRef.current;
+                volume.setPosition(position[0], position[1], position[2]);
+              }
+              if (typeof volume.setOrientation === "function") {
+                const { rotation } = workspaceTransformRef.current;
+                volume.setOrientation(rotation[0], rotation[1], rotation[2]);
+              }
+              const ctfun = vtkColorTransferFunction.newInstance();
+              const ofun = vtkPiecewiseFunction.newInstance();
+              applyOverlayTransfer(
+                ctfun,
+                ofun,
+                parsed.dataRange,
+                item.materialPreset ?? "brain",
+                item.opacity
+              );
+              const property = volume.getProperty();
+              property.setRGBTransferFunction(0, ctfun);
+              property.setScalarOpacity(0, ofun);
+              property.setInterpolationTypeToLinear();
+              property.setShade(true);
+              property.setAmbient(0.12);
+              property.setDiffuse(0.6);
+              property.setSpecular(0.12);
+              property.setScalarOpacityUnitDistance(0, 0.9);
+              volume.setVisibility(item.visible);
+              return {
+                id: item.id,
+                path: item.path,
+                volume,
+                mapper: volumeMapper,
+                ctfun,
+                ofun,
+                dataRange: parsed.dataRange,
+                dimensions: parsed.dimensions,
+                spacing: parsed.spacing,
+                materialPreset: item.materialPreset ?? "brain",
+                opacity: item.opacity,
+                visible: item.visible,
+                layer: item.layer ?? "overlay",
+                position: item.position ?? [0, 0, 0],
+                rotation: item.rotation ?? [0, 0, 0],
+                clipEnabled: item.clipEnabled ?? false,
+                clipAxis: item.clipAxis ?? "z",
+                clipValue: item.clipValue ?? 0.5,
+                clipPlane: null,
+                explodeEnabled: item.explodeEnabled ?? false,
+                explodeDistance: item.explodeDistance ?? 0.25,
+              } as MeshOverlayVolume;
+            };
+
+            let baseVolume: any = null;
+            let baseMapper: any = null;
+            let baseCtfun: any = null;
+            let baseOfun: any = null;
+            let baseRange: [number, number] = [0, 1];
+            let baseDimensions: [number, number, number] = [1, 1, 1];
+            let baseSpacing: [number, number, number] = [1, 1, 1];
+
+            if (meshVolumeEnabled) {
+              const response = await apiFetch(buildVolumeFileUrl());
+              if (!response.ok) {
+                throw new Error(
+                  `Volume download failed (${response.status})`
+                );
+              }
+              const arrayBuffer = await response.arrayBuffer();
+              const parsed = parseNiftiBuffer(arrayBuffer);
+              baseRange = parsed.dataRange;
+              baseDimensions = parsed.dimensions;
+              baseSpacing = parsed.spacing;
+              const volumeMapper = vtkVolumeMapper.newInstance();
+              volumeMapper.setSampleDistance(1.2);
+              volumeMapper.setInputData(parsed.imageData);
+              const volume = vtkVolume.newInstance();
+              volume.setMapper(volumeMapper);
+              const ctfun = vtkColorTransferFunction.newInstance();
+              const ofun = vtkPiecewiseFunction.newInstance();
+              const min = parsed.dataRange[0];
+              const max = parsed.dataRange[1];
+              const range = max - min || 1;
+              const opacityScale = Math.max(
+                0,
+                Math.min(meshVolumeOpacity, 0.8)
+              );
+              const mid = min + range * 0.5;
+              const hi = min + range * 0.85;
+              const colorStops =
+                VOLUME_COLOR_STOPS[meshVolumeColormap] ??
+                VOLUME_COLOR_STOPS.radiance;
+              colorStops.forEach(([stop, color]) => {
+                const value = min + range * stop;
+                ctfun.addRGBPoint(value, color[0], color[1], color[2]);
+              });
+              ofun.addPoint(min, 0.0);
+              ofun.addPoint(mid, 0.05 * opacityScale);
+              ofun.addPoint(hi, 0.25 * opacityScale);
+              ofun.addPoint(max, 0.9 * opacityScale);
+              const property = volume.getProperty();
+              property.setRGBTransferFunction(0, ctfun);
+              property.setScalarOpacity(0, ofun);
+              property.setInterpolationTypeToLinear();
+              property.setShade(true);
+              property.setAmbient(0.15);
+              property.setDiffuse(0.65);
+              property.setSpecular(0.2);
+              property.setScalarOpacityUnitDistance(0, 0.9);
+              renderer.addVolume(volume);
+              renderer.resetCamera();
+              baseVolume = volume;
+              baseMapper = volumeMapper;
+              baseCtfun = ctfun;
+              baseOfun = ofun;
+            }
+
+            meshVolumeStateRef.current = {
+              renderWindow,
+              renderer,
+              volumeMapper: baseMapper,
+              volume: baseVolume,
+              ctfun: baseCtfun,
+              ofun: baseOfun,
+              dataRange: baseRange,
+              dimensions: baseDimensions,
+              spacing: baseSpacing,
+              clipPlane: null,
+              overlayVolumes: new Map(),
+              overlayLoader: createOverlayVolume,
+            };
+            if (meshOverlayItemsRef.current.length > 0) {
+              void syncMeshOverlayVolumes();
+            }
+
+            const resizeVolume = () => {
+              const bounds = volumeLayer.getBoundingClientRect();
+              const dpr = Math.min(window.devicePixelRatio || 1, 1.25);
+              openGLRenderWindow.setSize(
+                Math.max(1, Math.floor(bounds.width * dpr)),
+                Math.max(1, Math.floor(bounds.height * dpr))
+              );
+              renderWindow.render();
+            };
+            resizeVolume();
+
+            const cleanup = () => {
+              const current = meshVolumeStateRef.current;
+              if (current?.overlayVolumes) {
+                current.overlayVolumes.forEach((overlay) => {
+                  if (typeof renderer.removeVolume === "function") {
+                    renderer.removeVolume(overlay.volume);
+                  }
+                  overlay.volume?.delete?.();
+                  overlay.mapper?.delete?.();
+                  overlay.ctfun?.delete?.();
+                  overlay.ofun?.delete?.();
+                });
+                current.overlayVolumes.clear();
+              }
+              meshVolumeStateRef.current = null;
+              try {
+                interactor.unbindEvents?.();
+                interactor.delete();
+                openGLRenderWindow.delete();
+                renderer.delete();
+                renderWindow.delete();
+              } catch {
+                // ignore cleanup errors
+              }
+              volumeLayer.replaceChildren();
+            };
+
+            return { resize: resizeVolume, cleanup };
+          };
+
+          try {
+            const helpers = await initMeshVolumeUnderlay();
+            if (helpers) {
+              meshVolumeResize = helpers.resize;
+              meshVolumeCleanup = helpers.cleanup;
+              meshVolumeCleanupRef.current = helpers.cleanup;
+            }
+          } catch (err) {
+            console.warn("Mesh volume underlay failed", err);
+          }
+        }
+
         const primaryChannel = meshSource === "mask" ? 0 : viewerChannel;
+        if (!cancelled) {
+          setMeshLoading(true);
+        }
         const response = await apiFetch(
           buildMeshUrl(meshPrimaryPath, meshIso, meshStep, primaryChannel)
         );
@@ -1892,15 +4081,23 @@ export default function App() {
         const size = new THREE.Vector3();
         bounds.getSize(size);
         const maxDim = Math.max(size.x, size.y, size.z) || 1;
+        controls.minDistance = maxDim * 0.35;
+        controls.maxDistance = maxDim * 12;
 
         const materialPreset = MESH_MATERIAL_PRESETS[meshMaterialPreset];
+        const meshOpacityValue = Math.max(0.1, Math.min(1, meshOpacity));
+        const baseTransmission = materialPreset.transmission ?? 0;
+        const transmission = meshVolumeEnabled
+          ? baseTransmission * 0.35
+          : baseTransmission;
+        const transparent = meshOpacityValue < 1 || transmission > 0;
         const material = new THREE.MeshPhysicalMaterial({
           color: new THREE.Color(materialPreset.color),
           roughness: materialPreset.roughness,
           metalness: materialPreset.metalness,
           clearcoat: materialPreset.clearcoat ?? 0,
           clearcoatRoughness: materialPreset.clearcoatRoughness ?? 0,
-          transmission: materialPreset.transmission ?? 0,
+          transmission,
           thickness: materialPreset.thickness ?? 0,
           ior: materialPreset.ior ?? 1.5,
           sheen: materialPreset.sheen ?? 0,
@@ -1909,9 +4106,21 @@ export default function App() {
           ),
           emissive: new THREE.Color(materialPreset.emissive ?? 0x000000),
           side: THREE.DoubleSide,
+          transparent,
+          opacity: meshOpacityValue,
         });
 
         const meshGroup = new THREE.Group();
+        meshGroup.visible = workspaceItemVisibleRef.current;
+        {
+          const { position, rotation } = workspaceTransformRef.current;
+          meshGroup.position.set(position[0], position[1], position[2]);
+          meshGroup.rotation.set(
+            (rotation[0] * Math.PI) / 180,
+            (rotation[1] * Math.PI) / 180,
+            (rotation[2] * Math.PI) / 180
+          );
+        }
         const positions = sourceGeometry.attributes.position
           .array as Float32Array;
         const totalVertices = sourceGeometry.attributes.position.count;
@@ -2108,54 +4317,22 @@ export default function App() {
         }
 
         scene.add(meshGroup);
-        let overlayMesh: any | null = null;
-        let overlayMaterial: any | null = null;
-        if (meshOverlayPath) {
-          try {
-            const overlayResponse = await apiFetch(
-              buildMeshUrl(meshOverlayPath, meshOverlayIso, meshOverlayStep, 0)
-            );
-            if (overlayResponse.ok) {
-              const overlayBuffer = await overlayResponse.arrayBuffer();
-              const overlayRaw = loader.parse(overlayBuffer);
-              const overlayGeometry = overlayRaw.index
-                ? overlayRaw.toNonIndexed()
-                : overlayRaw;
-              overlayGeometry.computeVertexNormals();
-              overlayGeometry.computeBoundingBox();
-              overlayGeometry.translate(-mainCenter.x, -mainCenter.y, -mainCenter.z);
-              overlayGeometry.computeBoundingBox();
-              const overlayOpacity = Math.min(
-                0.95,
-                Math.max(0.15, meshOverlayOpacity)
-              );
-              overlayMaterial = new THREE.MeshPhysicalMaterial({
-                color: new THREE.Color(0xff3b30),
-                emissive: new THREE.Color(0x8b1510),
-                roughness: 0.25,
-                metalness: 0.05,
-                clearcoat: 0.55,
-                clearcoatRoughness: 0.25,
-                transmission: 0.08,
-                thickness: 0.4,
-                transparent: true,
-                opacity: overlayOpacity,
-                depthWrite: false,
-                polygonOffset: true,
-                polygonOffsetFactor: -1,
-                polygonOffsetUnits: -1,
-                side: THREE.DoubleSide,
-              });
-              overlayMesh = new THREE.Mesh(overlayGeometry, overlayMaterial);
-              overlayMesh.renderOrder = 4;
-              overlayMesh.frustumCulled = false;
-              scene.add(overlayMesh);
-            }
-          } catch {
-            // overlay is optional
-          }
+        const snapshot = meshCameraSnapshotRef.current;
+        if (snapshot) {
+          camera.position.set(
+            snapshot.position[0],
+            snapshot.position[1],
+            snapshot.position[2]
+          );
+          camera.up.set(snapshot.up[0], snapshot.up[1], snapshot.up[2]);
+          controls.target.set(
+            snapshot.target[0],
+            snapshot.target[1],
+            snapshot.target[2]
+          );
+        } else {
+          camera.position.set(0, 0, maxDim * 1.6);
         }
-        camera.position.set(0, 0, maxDim * 1.6);
         camera.near = Math.max(0.1, maxDim * 0.02);
         camera.far = Math.max(200, maxDim * 6);
         camera.updateProjectionMatrix();
@@ -2190,8 +4367,13 @@ export default function App() {
           meshIndexMap.set(part.mesh, index);
         });
 
+        const overlayStackGroup = new THREE.Group();
+        overlayStackGroup.name = "overlayStackGroup";
+        scene.add(overlayStackGroup);
+
         meshStateRef.current = {
           three: THREE,
+          plyLoader: PLYLoader,
           renderer,
           scene,
           camera,
@@ -2200,19 +4382,24 @@ export default function App() {
           meshParts,
           sourceGeometry,
           material,
-          overlayMesh,
-          overlayMaterial,
+          overlayMesh: null,
+          overlayMaterial: null,
+          overlayStackGroup,
+          overlayStackMeshes: new Map(),
           clipPlane: null,
           bounds: boundsPayload,
+          centerOffset: [mainCenter.x, mainCenter.y, mainCenter.z],
           maxDim,
           activePartIndex: 0,
         };
+        setMeshOverlayRevision((value) => value + 1);
 
         clearMeshSelection();
         setMeshPartCount(meshParts.length);
         setMeshActiveGroup(0);
         setMeshSelectionCount(0);
         setMeshPartOffsets({});
+        setMeshPickedLabel("");
 
         const raycaster = new THREE.Raycaster();
         const pointer = new THREE.Vector2();
@@ -2233,6 +4420,83 @@ export default function App() {
         const panRight = new THREE.Vector3();
         const panUp = new THREE.Vector3();
         const panOffset = new THREE.Vector3();
+        const flyForward = new THREE.Vector3();
+        const flyRight = new THREE.Vector3();
+        const flyUp = new THREE.Vector3();
+        const flyDelta = new THREE.Vector3();
+        const keyState = {
+          w: false,
+          a: false,
+          s: false,
+          d: false,
+          q: false,
+          e: false,
+        };
+        const transformState = {
+          mode: null as "move" | "rotate" | null,
+          axis: null as 0 | 1 | 2 | null,
+        };
+        let transformPointerId: number | null = null;
+        let transformStart = { x: 0, y: 0 };
+        let transformBasePosition: [number, number, number] = [0, 0, 0];
+        let transformBaseRotation: [number, number, number] = [0, 0, 0];
+        let transformTargetId: string | null = null;
+        let transformRaf = 0;
+        let transformPending: { dx: number; dy: number } | null = null;
+
+        const normalizeTransform = (
+          value?: [number, number, number]
+        ): [number, number, number] => {
+          if (Array.isArray(value) && value.length === 3) {
+            return [
+              Number(value[0]) || 0,
+              Number(value[1]) || 0,
+              Number(value[2]) || 0,
+            ];
+          }
+          return [0, 0, 0];
+        };
+
+        const applyTransformDelta = (dx: number, dy: number) => {
+          if (!transformTargetId || transformState.axis === null) return;
+          const axis = transformState.axis;
+          const axisDelta =
+            axis === 0 ? dx : axis === 1 ? -dy : dx + dy * 0.5;
+          if (transformState.mode === "move") {
+            const next: [number, number, number] = [
+              transformBasePosition[0],
+              transformBasePosition[1],
+              transformBasePosition[2],
+            ];
+            const moveScale = Math.max(0.001, maxDim * 0.002);
+            next[axis] = transformBasePosition[axis] + axisDelta * moveScale;
+            updateMeshOverlayItem(transformTargetId, { position: next });
+            return;
+          }
+          if (transformState.mode === "rotate") {
+            const next: [number, number, number] = [
+              transformBaseRotation[0],
+              transformBaseRotation[1],
+              transformBaseRotation[2],
+            ];
+            const rotateScale = 0.25;
+            next[axis] = transformBaseRotation[axis] + axisDelta * rotateScale;
+            updateMeshOverlayItem(transformTargetId, { rotation: next });
+          }
+        };
+
+        const scheduleTransform = (dx: number, dy: number) => {
+          transformPending = { dx, dy };
+          if (transformRaf) return;
+          transformRaf = window.requestAnimationFrame(() => {
+            const pending = transformPending;
+            if (pending) {
+              applyTransformDelta(pending.dx, pending.dy);
+            }
+            transformPending = null;
+            transformRaf = 0;
+          });
+        };
 
         const applySculpt = (
           partIndex: number,
@@ -2355,6 +4619,10 @@ export default function App() {
           if (!hits.length) return;
           const hit = hits[0];
           const partIndex = meshIndexMap.get(hit.object) ?? 0;
+          if (tool === "label") {
+            createMeshLabel(partIndex);
+            return;
+          }
           if (tool === "select") {
             selectVertices(partIndex, hit);
             return;
@@ -2402,8 +4670,32 @@ export default function App() {
         const onPointerDown = (event: PointerEvent) => {
           const tool = meshToolRef.current;
           if (orbitOverrideActive || panOverrideActive) return;
+          if (
+            event.button === 0 &&
+            transformState.mode &&
+            transformState.axis !== null
+          ) {
+            const targetId = activeMeshOverlayIdRef.current;
+            const targetItem = meshOverlayItemsRef.current.find(
+              (item) => item.id === targetId
+            );
+            if (targetId && targetItem && targetItem.renderMode === "mesh") {
+              transformTargetId = targetId;
+              transformBasePosition = normalizeTransform(targetItem.position);
+              transformBaseRotation = normalizeTransform(targetItem.rotation);
+              transformStart = { x: event.clientX, y: event.clientY };
+              transformPointerId = event.pointerId;
+              controls.enabled = false;
+              meshSculptingRef.current = false;
+              renderer.domElement.setPointerCapture(event.pointerId);
+              renderer.domElement.style.cursor = "grabbing";
+              event.preventDefault();
+              event.stopImmediatePropagation();
+              return;
+            }
+          }
           if (tool === "orbit") return;
-          if (tool === "select") {
+          if (tool === "select" || tool === "label") {
             handlePointer(event);
             return;
           }
@@ -2413,6 +4705,13 @@ export default function App() {
         };
 
         const onPointerMove = (event: PointerEvent) => {
+          if (transformPointerId !== null) {
+            if (event.pointerId !== transformPointerId) return;
+            const dx = event.clientX - transformStart.x;
+            const dy = event.clientY - transformStart.y;
+            scheduleTransform(dx, dy);
+            return;
+          }
           if (orbitOverrideActive) {
             if (orbitPointerId !== null && event.pointerId !== orbitPointerId) {
               return;
@@ -2523,9 +4822,21 @@ export default function App() {
           controls.update();
         };
 
-        const onPointerUp = (event: PointerEvent) => {
+        const onPointerUp = () => {
           meshSculptingRef.current = false;
           meshPendingRef.current = null;
+          if (transformPointerId !== null) {
+            renderer.domElement.releasePointerCapture(transformPointerId);
+            transformPointerId = null;
+            transformTargetId = null;
+            transformPending = null;
+            if (transformRaf) {
+              window.cancelAnimationFrame(transformRaf);
+              transformRaf = 0;
+            }
+            renderer.domElement.style.cursor = orbitHoverActive ? "grab" : "";
+            controls.enabled = meshToolRef.current === "orbit";
+          }
           if (orbitOverrideActive) {
             if (orbitPointerId !== null) {
               renderer.domElement.releasePointerCapture(orbitPointerId);
@@ -2564,6 +4875,113 @@ export default function App() {
           setOrbitHoverCursor(event.ctrlKey);
         };
 
+        const shouldIgnoreKey = (event: KeyboardEvent) => {
+          const target = event.target as HTMLElement | null;
+          if (!target) return false;
+          const tag = target.tagName;
+          return (
+            tag === "INPUT" ||
+            tag === "TEXTAREA" ||
+            target.isContentEditable
+          );
+        };
+
+        const onKeyDown = (event: KeyboardEvent) => {
+          if (shouldIgnoreKey(event)) return;
+          let handled = true;
+          switch (event.code) {
+            case "KeyW":
+              keyState.w = true;
+              break;
+            case "KeyA":
+              keyState.a = true;
+              break;
+            case "KeyS":
+              keyState.s = true;
+              break;
+            case "KeyD":
+              keyState.d = true;
+              break;
+            case "KeyQ":
+              keyState.q = true;
+              break;
+            case "KeyE":
+              keyState.e = true;
+              break;
+            case "KeyM":
+              transformState.mode = "move";
+              break;
+            case "KeyR":
+              transformState.mode = "rotate";
+              break;
+            case "KeyX":
+              transformState.axis = 0;
+              break;
+            case "KeyY":
+              transformState.axis = 1;
+              break;
+            case "KeyZ":
+              transformState.axis = 2;
+              break;
+            default:
+              handled = false;
+              break;
+          }
+          if (handled) {
+            event.preventDefault();
+          }
+        };
+
+        const onKeyUp = (event: KeyboardEvent) => {
+          switch (event.code) {
+            case "KeyW":
+              keyState.w = false;
+              break;
+            case "KeyA":
+              keyState.a = false;
+              break;
+            case "KeyS":
+              keyState.s = false;
+              break;
+            case "KeyD":
+              keyState.d = false;
+              break;
+            case "KeyQ":
+              keyState.q = false;
+              break;
+            case "KeyE":
+              keyState.e = false;
+              break;
+            case "KeyM":
+              if (transformState.mode === "move") {
+                transformState.mode = null;
+              }
+              break;
+            case "KeyR":
+              if (transformState.mode === "rotate") {
+                transformState.mode = null;
+              }
+              break;
+            case "KeyX":
+              if (transformState.axis === 0) {
+                transformState.axis = null;
+              }
+              break;
+            case "KeyY":
+              if (transformState.axis === 1) {
+                transformState.axis = null;
+              }
+              break;
+            case "KeyZ":
+              if (transformState.axis === 2) {
+                transformState.axis = null;
+              }
+              break;
+            default:
+              return;
+          }
+        };
+
         const onContextMenu = (event: Event) => {
           event.preventDefault();
         };
@@ -2586,15 +5004,20 @@ export default function App() {
         renderer.domElement.addEventListener("contextmenu", onContextMenu);
         window.addEventListener("keydown", onKeyToggle);
         window.addEventListener("keyup", onKeyToggle);
+        window.addEventListener("keydown", onKeyDown);
+        window.addEventListener("keyup", onKeyUp);
         window.addEventListener("pointerup", onPointerUp);
 
         const resize = () => {
-          const bounds = container.getBoundingClientRect();
+          const bounds = meshLayer.getBoundingClientRect();
           const width = Math.max(1, bounds.width);
           const height = Math.max(1, bounds.height);
           camera.aspect = width / height;
           camera.updateProjectionMatrix();
           renderer.setSize(width, height, false);
+          if (meshVolumeResize) {
+            meshVolumeResize();
+          }
         };
 
         const resizeObserver =
@@ -2607,10 +5030,90 @@ export default function App() {
         resize();
 
         let animationId = 0;
+        let lastTime = performance.now();
+        let lastRenderTime = 0;
+        const targetFrameMs = 1000 / 30;
+        const idleFrameMs = 1000 / 6;
         const animate = () => {
           animationId = window.requestAnimationFrame(animate);
-          controls.update();
+          if (document.hidden) return;
+          const now = performance.now();
+          const delta = Math.min(0.05, (now - lastTime) / 1000);
+          lastTime = now;
+
+          let hasActivity = false;
+          flyDelta.set(0, 0, 0);
+          if (
+            keyState.w ||
+            keyState.a ||
+            keyState.s ||
+            keyState.d ||
+            keyState.q ||
+            keyState.e
+          ) {
+            hasActivity = true;
+            camera.getWorldDirection(flyForward);
+            flyForward.normalize();
+            flyRight.copy(flyForward).cross(camera.up).normalize();
+            flyUp.copy(camera.up).normalize();
+            const flySpeed = maxDim * 0.8;
+            if (keyState.w) flyDelta.add(flyForward);
+            if (keyState.s) flyDelta.addScaledVector(flyForward, -1);
+            if (keyState.d) flyDelta.add(flyRight);
+            if (keyState.a) flyDelta.addScaledVector(flyRight, -1);
+            if (keyState.e) flyDelta.add(flyUp);
+            if (keyState.q) flyDelta.addScaledVector(flyUp, -1);
+            if (flyDelta.lengthSq() > 0) {
+              flyDelta.normalize().multiplyScalar(flySpeed * delta);
+              camera.position.add(flyDelta);
+              controls.target.add(flyDelta);
+            }
+          }
+          if (
+            ctrlOrbitActive ||
+            orbitOverrideActive ||
+            panOverrideActive ||
+            meshSculptingRef.current ||
+            meshPendingRef.current ||
+            transformState.mode ||
+            transformPending ||
+            transformPointerId !== null
+          ) {
+            hasActivity = true;
+          }
+          const controlsChanged = controls.update();
+          if (controlsChanged) {
+            hasActivity = true;
+          }
+          const frameInterval = hasActivity ? targetFrameMs : idleFrameMs;
+          if (now - lastRenderTime < frameInterval) return;
+          lastRenderTime = now;
+
           renderer.render(scene, camera);
+          if (meshVolumeStateRef.current) {
+            const vtkCamera = meshVolumeStateRef.current.renderer.getActiveCamera();
+            const target = controls.target;
+            vtkCamera.setPosition(
+              camera.position.x,
+              camera.position.y,
+              camera.position.z
+            );
+            vtkCamera.setFocalPoint(target.x, target.y, target.z);
+            vtkCamera.setViewUp(camera.up.x, camera.up.y, camera.up.z);
+            if (typeof vtkCamera.setViewAngle === "function") {
+              vtkCamera.setViewAngle(camera.fov);
+            }
+            if (typeof vtkCamera.setClippingRange === "function") {
+              vtkCamera.setClippingRange(0.01, maxDim * 12);
+            }
+            if (
+              typeof meshVolumeStateRef.current.renderer.resetCameraClippingRange ===
+              "function"
+            ) {
+              meshVolumeStateRef.current.renderer.resetCameraClippingRange();
+            }
+            meshVolumeStateRef.current.renderWindow.render();
+          }
         };
         animate();
 
@@ -2633,10 +5136,17 @@ export default function App() {
           renderer.domElement.removeEventListener("pointerenter", onPointerEnter);
           renderer.domElement.removeEventListener("pointerleave", onPointerLeave);
           renderer.domElement.removeEventListener("wheel", onWheel);
-          renderer.domElement.removeEventListener("contextmenu", onContextMenu);
-          window.removeEventListener("keydown", onKeyToggle);
-          window.removeEventListener("keyup", onKeyToggle);
-          window.removeEventListener("pointerup", onPointerUp);
+        renderer.domElement.removeEventListener("contextmenu", onContextMenu);
+        window.removeEventListener("keydown", onKeyToggle);
+        window.removeEventListener("keyup", onKeyToggle);
+        window.removeEventListener("keydown", onKeyDown);
+        window.removeEventListener("keyup", onKeyUp);
+        window.removeEventListener("pointerup", onPointerUp);
+          meshCameraSnapshotRef.current = {
+            position: [camera.position.x, camera.position.y, camera.position.z],
+            target: [controls.target.x, controls.target.y, controls.target.z],
+            up: [camera.up.x, camera.up.y, camera.up.z],
+          };
           clearMeshSelection();
           controls.dispose();
           grid.removeFromParent();
@@ -2653,16 +5163,56 @@ export default function App() {
             part.mesh.removeFromParent();
             part.geometry.dispose();
           });
+          meshGroup.removeFromParent();
+          material.dispose();
+          const overlayMesh = meshStateRef.current?.overlayMesh;
+          const overlayMaterial = meshStateRef.current?.overlayMaterial;
+          const overlayStackGroup = meshStateRef.current?.overlayStackGroup;
+          const overlayStackMeshes = meshStateRef.current?.overlayStackMeshes;
+          const labelGroup = meshStateRef.current?.labelGroup;
+          const labelLine = meshStateRef.current?.labelLine;
+          const labelSprite = meshStateRef.current?.labelSprite;
           if (overlayMesh) {
             overlayMesh.removeFromParent();
             overlayMesh.geometry?.dispose?.();
           }
-          meshGroup.removeFromParent();
-          material.dispose();
           if (overlayMaterial) {
             overlayMaterial.dispose();
           }
+          if (overlayStackMeshes) {
+            overlayStackMeshes.forEach((entry) => {
+              overlayStackGroup?.remove(entry.mesh);
+              entry.mesh.geometry?.dispose?.();
+              entry.material.dispose?.();
+            });
+            overlayStackMeshes.clear();
+          }
+          if (overlayStackGroup) {
+            overlayStackGroup.removeFromParent();
+          }
+          if (labelLine) {
+            labelLine.removeFromParent();
+            labelLine.geometry?.dispose?.();
+            labelLine.material?.dispose?.();
+          }
+          if (labelSprite) {
+            labelSprite.removeFromParent();
+            const labelMaterial = labelSprite.material as any;
+            if (labelMaterial?.map) {
+              labelMaterial.map.dispose?.();
+            }
+            labelMaterial?.dispose?.();
+          }
+          if (labelGroup) {
+            labelGroup.removeFromParent();
+          }
           renderer.dispose();
+          if (meshVolumeCleanup) {
+            meshVolumeCleanup();
+          } else if (meshVolumeCleanupRef.current) {
+            meshVolumeCleanupRef.current();
+          }
+          meshVolumeCleanupRef.current = null;
           container.replaceChildren();
           meshStateRef.current = null;
           if (meshRafRef.current) {
@@ -2696,24 +5246,191 @@ export default function App() {
     viewerMode,
     viewer3dMode,
     meshPrimaryPath,
-    meshOverlayPath,
-    meshOverlayIso,
-    meshOverlayStep,
-    meshOverlayOpacity,
+    meshIso,
+    meshStep,
+    meshVolumeEnabled,
     meshSource,
     meshMaskAvailable,
     meshMountKey,
     meshRevision,
     buildMeshUrl,
+    buildVolumeFileUrl,
+    buildVolumeFileUrlFor,
+    applyOverlayTransfer,
+    syncMeshOverlayVolumes,
     apiFetch,
     isAuthenticated,
+  ]);
+
+  useEffect(() => {
+    if (viewerMode !== "3d" || viewer3dMode !== "mesh") return;
+    const state = meshStateRef.current;
+    if (!state) return;
+    const overlayPath = meshOverlayPath;
+    if (!overlayPath) {
+      if (state.overlayMesh) {
+        state.overlayMesh.removeFromParent();
+        state.overlayMesh.geometry?.dispose?.();
+        state.overlayMesh = null;
+      }
+      if (state.overlayMaterial) {
+        state.overlayMaterial.dispose();
+        state.overlayMaterial = null;
+      }
+      return;
+    }
+    if (!meshOverlayEnabled) {
+      if (state.overlayMesh) {
+        state.overlayMesh.visible = false;
+      }
+      return;
+    }
+
+    let cancelled = false;
+    const targetState = state;
+    const loadOverlay = async () => {
+      try {
+        const { three: THREE, plyLoader } = targetState;
+        const overlayResponse = await apiFetch(
+          buildMeshUrl(overlayPath, meshOverlayIso, meshOverlayStep, 0, {
+            disableVessel: true,
+          })
+        );
+        if (!overlayResponse.ok) {
+          throw new Error(
+            `Overlay mesh download failed (${overlayResponse.status}).`
+          );
+        }
+        const overlayBuffer = await overlayResponse.arrayBuffer();
+        if (cancelled || meshStateRef.current !== targetState) return;
+
+        const loaderCtor =
+          plyLoader ??
+          ((
+            await import("three/examples/jsm/loaders/PLYLoader")
+          ) as {
+            PLYLoader: new () => { parse: (data: ArrayBuffer) => any };
+          }).PLYLoader;
+        const loader = new loaderCtor();
+        const overlayRaw = loader.parse(overlayBuffer);
+        const overlayGeometry = overlayRaw.index
+          ? overlayRaw.toNonIndexed()
+          : overlayRaw;
+        overlayGeometry.computeVertexNormals();
+        overlayGeometry.computeBoundingBox();
+        const offset = targetState.centerOffset;
+        overlayGeometry.translate(-offset[0], -offset[1], -offset[2]);
+        overlayGeometry.computeBoundingBox();
+
+        const overlayOpacity = Math.min(
+          0.95,
+          Math.max(0.15, meshOverlayOpacityRef.current)
+        );
+        const overlayMaterial = new THREE.MeshPhysicalMaterial({
+          color: new THREE.Color(0xff3b30),
+          emissive: new THREE.Color(0x8b1510),
+          roughness: 0.25,
+          metalness: 0.05,
+          clearcoat: 0.55,
+          clearcoatRoughness: 0.25,
+          transmission: 0.08,
+          thickness: 0.4,
+          transparent: true,
+          opacity: overlayOpacity,
+          depthTest: false,
+          depthWrite: false,
+          polygonOffset: true,
+          polygonOffsetFactor: -1,
+          polygonOffsetUnits: -1,
+          side: THREE.DoubleSide,
+        });
+        const overlayMesh = new THREE.Mesh(overlayGeometry, overlayMaterial);
+        overlayMesh.renderOrder = 4;
+        overlayMesh.frustumCulled = false;
+        overlayMesh.visible = meshOverlayEnabled;
+        applyOverlayLockTransform(overlayMesh);
+
+        if (targetState.overlayMesh) {
+          targetState.overlayMesh.removeFromParent();
+          targetState.overlayMesh.geometry?.dispose?.();
+        }
+        if (targetState.overlayMaterial) {
+          targetState.overlayMaterial.dispose();
+        }
+        targetState.overlayMesh = overlayMesh;
+        targetState.overlayMaterial = overlayMaterial;
+        targetState.scene.add(overlayMesh);
+      } catch (err) {
+        console.warn("Overlay mesh load failed", err);
+      }
+    };
+
+    void loadOverlay();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    viewerMode,
+    viewer3dMode,
+    meshOverlayEnabled,
+    meshOverlayPath,
+    meshOverlayIso,
+    meshOverlayStep,
+    meshRevision,
+    meshOverlayRevision,
+    buildMeshUrl,
+    apiFetch,
+    applyOverlayLockTransform,
+  ]);
+
+  useEffect(() => {
+    if (viewerMode !== "3d" || viewer3dMode !== "mesh") return;
+    const state = meshStateRef.current;
+    if (!state?.overlayMesh) return;
+    applyOverlayLockTransform(state.overlayMesh);
+  }, [
+    viewerMode,
+    viewer3dMode,
+    meshOverlayItems,
+    meshOverlayLockEnabled,
+    meshOverlayLockTarget,
+    applyOverlayLockTransform,
+  ]);
+
+  useEffect(() => {
+    if (viewerMode !== "3d" || viewer3dMode !== "mesh") return;
+    void syncMeshOverlayVolumes();
+  }, [
+    viewerMode,
+    viewer3dMode,
+    meshOverlayItems,
+    meshVolumeEnabled,
+    meshRevision,
+    meshMountKey,
+    syncMeshOverlayVolumes,
+  ]);
+
+  useEffect(() => {
+    if (viewerMode !== "3d" || viewer3dMode !== "mesh") return;
+    void syncMeshOverlayMeshes();
+  }, [
+    viewerMode,
+    viewer3dMode,
+    meshOverlayItems,
+    meshOverlayIso,
+    meshOverlayStep,
+    viewerChannel,
+    meshRevision,
+    meshMountKey,
+    syncMeshOverlayMeshes,
   ]);
 
   useEffect(() => {
     const state = meshStateRef.current;
     if (!state) return;
     state.controls.enabled = meshTool === "orbit";
-    if (meshTool === "select") {
+    if (meshTool === "select" || meshTool === "label") {
       meshSculptingRef.current = false;
       meshPendingRef.current = null;
     }
@@ -2721,7 +5438,7 @@ export default function App() {
 
   useEffect(() => {
     if (meshCanSculpt) return;
-    if (meshTool !== "orbit" && meshTool !== "select") {
+    if (meshTool !== "orbit" && meshTool !== "select" && meshTool !== "label") {
       setMeshTool("orbit");
     }
   }, [meshCanSculpt, meshTool]);
@@ -2758,6 +5475,10 @@ export default function App() {
     state.meshParts.forEach((part, index) => {
       part.mesh.visible = !meshIsolateEnabled || index === meshActiveGroup;
     });
+    if (state.labelGroup && state.labelPartIndex != null) {
+      state.labelGroup.visible =
+        !meshIsolateEnabled || state.labelPartIndex === meshActiveGroup;
+    }
   }, [meshIsolateEnabled, meshActiveGroup, meshRevision]);
 
   useEffect(() => {
@@ -2765,20 +5486,38 @@ export default function App() {
     if (!state) return;
     const preset = MESH_MATERIAL_PRESETS[meshMaterialPreset];
     const material = state.material;
+    const meshOpacityValue = Math.max(0.1, Math.min(1, meshOpacity));
+    const baseTransmission = preset.transmission ?? 0;
+    const transmission = meshVolumeEnabled
+      ? baseTransmission * 0.35
+      : baseTransmission;
     material.color.setHex(preset.color);
     material.roughness = preset.roughness;
     material.metalness = preset.metalness;
     material.clearcoat = preset.clearcoat ?? 0;
     material.clearcoatRoughness = preset.clearcoatRoughness ?? 0;
-    material.transmission = preset.transmission ?? 0;
+    material.transmission = transmission;
     material.thickness = preset.thickness ?? 0;
     material.ior = preset.ior ?? 1.5;
     material.sheen = preset.sheen ?? 0;
     material.sheenColor = new state.three.Color(preset.sheenColor ?? 0x000000);
     material.emissive = new state.three.Color(preset.emissive ?? 0x000000);
-    material.transparent = (preset.transmission ?? 0) > 0;
+    material.opacity = meshOpacityValue;
+    material.transparent = meshOpacityValue < 1 || transmission > 0;
     material.needsUpdate = true;
-  }, [meshMaterialPreset]);
+  }, [meshMaterialPreset, meshOpacity, meshVolumeEnabled]);
+
+  useEffect(() => {
+    const state = meshStateRef.current;
+    if (!state?.overlayMaterial) return;
+    const overlayOpacity = Math.min(0.95, Math.max(0.1, meshOverlayOpacity));
+    state.overlayMaterial.opacity = overlayOpacity;
+    state.overlayMaterial.transparent = overlayOpacity < 1;
+    state.overlayMaterial.needsUpdate = true;
+    if (state.overlayMesh) {
+      state.overlayMesh.visible = meshOverlayEnabled;
+    }
+  }, [meshOverlayOpacity, meshOverlayEnabled, meshRevision]);
 
   useEffect(() => {
     if (!meshExplodeEnabled) return;
@@ -2803,7 +5542,14 @@ export default function App() {
         part.direction[2] * distance
       );
     });
-  }, [meshExplodeEnabled, meshExplodeDistance, meshPartOffsets, meshRevision]);
+    updateMeshLabelPosition();
+  }, [
+    meshExplodeEnabled,
+    meshExplodeDistance,
+    meshPartOffsets,
+    meshRevision,
+    updateMeshLabelPosition,
+  ]);
 
   useEffect(() => {
     const state = meshStateRef.current;
@@ -2840,7 +5586,7 @@ export default function App() {
     material.clippingPlanes = [plane];
     material.needsUpdate = true;
     if (overlayMaterial) {
-      overlayMaterial.clippingPlanes = [plane];
+      overlayMaterial.clippingPlanes = [];
       overlayMaterial.needsUpdate = true;
     }
   }, [meshClipEnabled, meshClipAxis, meshClipValue]);
@@ -2875,6 +5621,37 @@ export default function App() {
     state.ofun.addPoint(max, 0.9 * opacityScale);
     state.renderWindow.render();
   }, [volumeOpacity]);
+
+  useEffect(() => {
+    const state = meshVolumeStateRef.current;
+    if (!state || !state.ctfun) return;
+    const [min, max] = state.dataRange;
+    const range = max - min || 1;
+    const stops =
+      VOLUME_COLOR_STOPS[meshVolumeColormap] ?? VOLUME_COLOR_STOPS.radiance;
+    state.ctfun.removeAllPoints();
+    stops.forEach(([stop, color]) => {
+      const value = min + range * stop;
+      state.ctfun.addRGBPoint(value, color[0], color[1], color[2]);
+    });
+    state.renderWindow.render();
+  }, [meshVolumeColormap]);
+
+  useEffect(() => {
+    const state = meshVolumeStateRef.current;
+    if (!state || !state.ofun) return;
+    const [min, max] = state.dataRange;
+    const range = max - min || 1;
+    const mid = min + range * 0.5;
+    const hi = min + range * 0.85;
+    const opacityScale = Math.max(0, Math.min(meshVolumeOpacity, 0.8));
+    state.ofun.removeAllPoints();
+    state.ofun.addPoint(min, 0.0);
+    state.ofun.addPoint(mid, 0.05 * opacityScale);
+    state.ofun.addPoint(hi, 0.25 * opacityScale);
+    state.ofun.addPoint(max, 0.9 * opacityScale);
+    state.renderWindow.render();
+  }, [meshVolumeOpacity]);
 
   useEffect(() => {
     const state = viewer3dStateRef.current;
@@ -3101,6 +5878,237 @@ export default function App() {
       pushNotice("info", "Scan selected", `${name} ready to upload.`);
     }
   };
+
+  const clearOverviewUpload = useCallback(() => {
+    if (isWorkspace) return;
+    setFiles([]);
+    setUploadResult(null);
+    setUploadPreview(null);
+    setPreviewPath("");
+    setVolumeInfo(null);
+    setViewerError("");
+    setViewerLoading(false);
+    setJobId("");
+    setJobStatus(null);
+    setJobResult(null);
+    volumeInfoPathRef.current = "";
+    volumeInfoRequestRef.current = "";
+    previewPathRef.current = "";
+    pushNotice("info", "Upload cleared", "Overview scan state reset.");
+  }, [isWorkspace, pushNotice]);
+
+  const uploadMeshOverlayFiles = async (selected: File[]) => {
+    if (selected.length === 0) return;
+    const remaining = Math.max(
+      0,
+      MESH_OVERLAY_LIMIT - meshOverlayItemsRef.current.length
+    );
+    if (remaining <= 0) {
+      pushNotice(
+        "error",
+        "Overlay limit reached",
+        `Only ${MESH_OVERLAY_LIMIT} overlay volumes can be active.`
+      );
+      return;
+    }
+    const allowed = selected.filter((file) =>
+      ["nifti", "zip"].includes(inferFileKind(file.name))
+    );
+    if (allowed.length === 0) {
+      pushNotice(
+        "error",
+        "Unsupported files",
+        "Overlay accepts NIfTI (.nii/.nii.gz) or zip uploads only."
+      );
+      return;
+    }
+    const queue = allowed.slice(0, remaining);
+    if (!meshVolumeEnabled) {
+      setMeshVolumeEnabled(true);
+      pushNotice(
+        "info",
+        "Volume underlay enabled",
+        "Overlay volumes require the underlay renderer to be active."
+      );
+    }
+    setMeshOverlayUploading(true);
+    try {
+      const created: MeshOverlayItem[] = [];
+      for (const file of queue) {
+        const form = new FormData();
+        form.append("file", file);
+        const res = await apiFetch(`${API_BASE}/api/uploads`, {
+          method: "POST",
+          body: form,
+        });
+        if (!res.ok) {
+          throw new Error(`Overlay upload failed (${res.status})`);
+        }
+        const data = (await res.json()) as UploadResponse;
+        const savedPath = "saved_path" in data ? data.saved_path : "";
+        if (!savedPath) continue;
+        const presetIndex =
+          (meshOverlayItemsRef.current.length + created.length) %
+          MESH_OVERLAY_MATERIAL_PRESETS.length;
+        created.push({
+          id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+          path: savedPath,
+          label: file.name,
+          materialPreset: MESH_OVERLAY_MATERIAL_PRESETS[presetIndex].id,
+          opacity: 0.45,
+          visible: true,
+          renderMode: "volume",
+          layer: "overlay",
+          position: [0, 0, 0],
+          rotation: [0, 0, 0],
+          clipEnabled: false,
+          clipAxis: "z",
+          clipValue: 0.5,
+          explodeEnabled: false,
+          explodeDistance: 0.25,
+        });
+      }
+      if (created.length > 0) {
+        setMeshOverlayItems((prev) => [...created, ...prev]);
+        setActiveMeshOverlayId(created[0].id);
+        pushNotice(
+          "success",
+          "Overlay ready",
+          `${created.length} volume(s) added to the stack.`
+        );
+      }
+    } catch (e: unknown) {
+      const message =
+        e instanceof Error ? e.message : "Overlay upload failed.";
+      pushNotice("error", "Overlay upload failed", message);
+    } finally {
+      setMeshOverlayUploading(false);
+      setMeshOverlayFiles([]);
+    }
+  };
+
+  const handleMeshOverlayFilesChange = (
+    event: ChangeEvent<HTMLInputElement>
+  ) => {
+    const selected = Array.from(event.target.files ?? []);
+    setMeshOverlayFiles(selected);
+    void uploadMeshOverlayFiles(selected);
+    event.target.value = "";
+  };
+
+  const handleMeshOverlayDrop = (event: ReactDragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    setMeshOverlayDropActive(false);
+    const dropped = Array.from(event.dataTransfer.files ?? []);
+    setMeshOverlayFiles(dropped);
+    void uploadMeshOverlayFiles(dropped);
+  };
+
+  const updateMeshOverlayItem = (
+    id: string,
+    patch: Partial<MeshOverlayItem>
+  ) => {
+    setMeshOverlayItems((prev) =>
+      prev.map((item) => (item.id === id ? { ...item, ...patch } : item))
+    );
+  };
+
+  const removeMeshOverlayItem = (id: string) => {
+    setMeshOverlayItems((prev) => prev.filter((item) => item.id !== id));
+  };
+
+  const moveMeshOverlayItem = useCallback(
+    (id: string, direction: "up" | "down") => {
+      setMeshOverlayItems((prev) => {
+        const currentIndex = prev.findIndex((item) => item.id === id);
+        if (currentIndex === -1) return prev;
+        const targetIndex = direction === "up" ? currentIndex - 1 : currentIndex + 1;
+        if (targetIndex < 0 || targetIndex >= prev.length) return prev;
+        const next = prev.slice();
+        const [moved] = next.splice(currentIndex, 1);
+        next.splice(targetIndex, 0, moved);
+        return next;
+      });
+    },
+    []
+  );
+
+  const updateWorkspaceUpload = useCallback(
+    (path: string, patch: Partial<WorkspaceUploadItem>) => {
+      setWorkspaceUploads((prev) =>
+        prev.map((item) => (item.path === path ? { ...item, ...patch } : item))
+      );
+    },
+    []
+  );
+
+  const clearWorkspaceUploads = useCallback(() => {
+    setWorkspaceUploads([]);
+    setWorkspacePath("");
+    setActiveWorkspaceIndex(0);
+    if (isWorkspace) {
+      navigate({ pathname: "/workspace", search: "" }, { replace: true });
+    }
+  }, [isWorkspace, navigate]);
+
+  const addWorkspaceUploadToOverlay = useCallback(
+    (item: WorkspaceUploadItem) => {
+      if (!item?.path) return;
+      if (
+        meshOverlayItemsRef.current.some((overlay) => overlay.path === item.path)
+      ) {
+        pushNotice(
+          "info",
+          "Already in overlay stack",
+          "This file is already layered."
+        );
+        return;
+      }
+      if (meshOverlayItemsRef.current.length >= MESH_OVERLAY_LIMIT) {
+        pushNotice(
+          "error",
+          "Overlay limit reached",
+          `Only ${MESH_OVERLAY_LIMIT} overlay volumes can be active.`
+        );
+        return;
+      }
+      if (!meshVolumeEnabled) {
+        setMeshVolumeEnabled(true);
+        pushNotice(
+          "info",
+          "Volume underlay enabled",
+          "Overlay volumes require the underlay renderer to be active."
+        );
+      }
+      const presetIndex =
+        meshOverlayItemsRef.current.length % MESH_OVERLAY_MATERIAL_PRESETS.length;
+      const overlayItem: MeshOverlayItem = {
+        id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        path: item.path,
+        label: item.label,
+        materialPreset: MESH_OVERLAY_MATERIAL_PRESETS[presetIndex].id,
+        opacity: Math.min(1, Math.max(0.1, meshOpacity)),
+        visible: true,
+        renderMode: "volume",
+        layer: "overlay",
+        position: [0, 0, 0],
+        rotation: [0, 0, 0],
+        clipEnabled: false,
+        clipAxis: "z",
+        clipValue: 0.5,
+        explodeEnabled: false,
+        explodeDistance: 0.25,
+      };
+      setMeshOverlayItems((prev) => [overlayItem, ...prev]);
+      setActiveMeshOverlayId(overlayItem.id);
+      pushNotice(
+        "success",
+        "Overlay added",
+        `${item.label} added to the stack.`
+      );
+    },
+    [meshVolumeEnabled, pushNotice]
+  );
 
   const handleModelSelect = (modelId: string) => {
     const model = models.find((item) => item.id === modelId);
@@ -3436,8 +6444,16 @@ export default function App() {
       setUploading(true);
 
       const isZipSelection = selectionKinds.includes("zip");
+      const isMultiNiftiSelection =
+        selectionKinds.length === 1 &&
+        selectionKinds[0] === "nifti" &&
+        files.length > 1;
+      const uploadIndividually =
+        isWorkspace &&
+        ((isZipSelection && files.length > 1) || isMultiNiftiSelection);
       const workspaceItems: WorkspaceUploadItem[] = [];
       let lastUploadedPath = "";
+      let lastUploadResult: UploadResponse | null = null;
 
       const pushWorkspaceItem = (path: string, label: string, kind: string) => {
         workspaceItems.push({
@@ -3445,10 +6461,13 @@ export default function App() {
           label,
           kind,
           createdAt: new Date().toISOString(),
+          visible: true,
+          position: [0, 0, 0],
+          rotation: [0, 0, 0],
         });
       };
 
-      if (isZipSelection && files.length > 1) {
+      if (uploadIndividually) {
         for (const file of files) {
           const form = new FormData();
           form.append("file", file);
@@ -3462,6 +6481,7 @@ export default function App() {
           if (savedPath) {
             pushWorkspaceItem(savedPath, file.name, data.kind ?? "zip");
             lastUploadedPath = savedPath;
+            lastUploadResult = data;
           }
         }
       } else {
@@ -3495,17 +6515,20 @@ export default function App() {
         }
       }
 
+      if (workspaceItems.length > 0) {
+        setWorkspaceUploads((prev) => {
+          const next = [
+            ...workspaceItems,
+            ...prev.filter(
+              (item) => !workspaceItems.some((entry) => entry.path === item.path)
+            ),
+          ];
+          return next;
+        });
+      }
+
       if (isWorkspace) {
         if (workspaceItems.length > 0) {
-          setWorkspaceUploads((prev) => {
-            const next = [
-              ...workspaceItems,
-              ...prev.filter(
-                (item) => !workspaceItems.some((entry) => entry.path === item.path)
-              ),
-            ];
-            return next;
-          });
           const nextPath = workspaceItems[0].path;
           setWorkspacePath(nextPath);
           setActiveWorkspaceIndex(0);
@@ -3528,6 +6551,9 @@ export default function App() {
           setUploadPreview(preview);
           setPreviewPath(nextPath);
         }
+      }
+      if (!isWorkspace && lastUploadResult) {
+        setUploadResult(lastUploadResult);
       }
     } catch (e: unknown) {
       const message = e instanceof Error ? e.message : "Upload failed";
@@ -4797,193 +7823,206 @@ export default function App() {
     </>
   );
 
-  const docsPath = useMemo(() => {
-    const raw = location.pathname.replace(/^\/docs\/?/, "").replace(/\/$/, "");
-    return raw || "";
-  }, [location.pathname]);
-  const docsKey = docsPath || DOCS_ROOT_KEY;
-  const docsContent =
-    DOCS_CONTENT[docsKey] || DOCS_CONTENT[DOCS_ROOT_KEY] || "# Documentation";
+  const docsPage = <DocsPage />;
 
-  const MIN_DOCS_CENTER_WIDTH = 720;
-  const MAX_DOCS_CENTER_WIDTH = 1100;
-  const docsPageRef = useRef<HTMLDivElement>(null);
-  const docsResizeRef = useRef<{
-    startX: number;
-    startWidth: number;
-    edge: "left" | "right";
-    pointerId: number;
-  } | null>(null);
-  const [docsCenterWidth, setDocsCenterWidth] = useState(860);
-
-  const clampDocsCenterWidth = useCallback((width: number) => {
-    const containerWidth = docsPageRef.current?.clientWidth ?? 0;
-    const maxByLayout =
-      containerWidth > 0
-        ? containerWidth - 200 - 160
-        : MAX_DOCS_CENTER_WIDTH;
-    const maxWidth = Math.max(
-      MIN_DOCS_CENTER_WIDTH,
-      Math.min(MAX_DOCS_CENTER_WIDTH, maxByLayout)
-    );
-    return Math.min(maxWidth, Math.max(MIN_DOCS_CENTER_WIDTH, width));
-  }, []);
-
-  const beginDocsResize = useCallback(
-    (edge: "right") => (event: React.PointerEvent<HTMLDivElement>) => {
-      if (event.button !== 0) return;
-      event.preventDefault();
-      event.currentTarget.setPointerCapture(event.pointerId);
-      docsResizeRef.current = {
-        startX: event.clientX,
-        startWidth: docsCenterWidth,
-        edge,
-        pointerId: event.pointerId,
-      };
-    },
-    [docsCenterWidth]
-  );
-
-  const handleDocsResizeMove = useCallback(
-    (event: React.PointerEvent<HTMLDivElement>) => {
-      const state = docsResizeRef.current;
-      if (!state || state.pointerId !== event.pointerId) return;
-      const delta = event.clientX - state.startX;
-      const nextWidth = state.startWidth + delta;
-      setDocsCenterWidth(clampDocsCenterWidth(nextWidth));
-    },
-    [clampDocsCenterWidth]
-  );
-
-  const endDocsResize = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
-    const state = docsResizeRef.current;
-    if (!state || state.pointerId !== event.pointerId) return;
-    docsResizeRef.current = null;
-    try {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    } catch {
-      // ignore release errors
-    }
-  }, []);
-
-  useEffect(() => {
-    const handleResize = () => {
-      setDocsCenterWidth((width) => clampDocsCenterWidth(width));
-    };
-    window.addEventListener("resize", handleResize);
-    return () => window.removeEventListener("resize", handleResize);
-  }, [clampDocsCenterWidth]);
-
-  const docsHeadings = useMemo(() => {
-    const lines = docsContent.split("\n");
-    return lines
-      .map((line) => {
-        const match = /^(#{2,3})\s+(.+)$/.exec(line.trim());
-        if (!match) return null;
-        const level = match[1].length;
-        const title = match[2].replace(/\s+#+$/, "").trim();
-        return {
-          level,
-          title,
-          id: slugifyHeading(title),
-        };
-      })
-      .filter(Boolean) as Array<{ level: number; title: string; id: string }>;
-  }, [docsContent]);
-
-  const renderDocsNav = (items: DocsNavItem[]) => (
-    <ul className="docs-nav-list">
-      {items.map((item) => {
-        const linkPath = item.path ?? "";
-        const href = `/docs/${linkPath}`.replace(/\/$/, "");
-        const isActive =
-          (!docsPath && linkPath === "") || docsPath === linkPath;
-        return (
-          <li key={`${item.label}-${linkPath}`}>
-            {item.path !== undefined ? (
-              <Link
-                className={`docs-nav-link ${isActive ? "active" : ""}`}
-                to={href || "/docs"}
-              >
-                {item.label}
-              </Link>
-            ) : (
-              <span className="docs-nav-heading">{item.label}</span>
-            )}
-            {item.children && renderDocsNav(item.children)}
-          </li>
-        );
-      })}
-    </ul>
-  );
-
-  const docsPage = (
-    <div
-      className="docs-page docs-theme"
-      ref={docsPageRef}
-      style={
-        {
-          "--docs-center-width": `${docsCenterWidth}px`,
-        } as React.CSSProperties
-      }
-    >
-      <aside className="docs-nav">
-        <div className="docs-nav-title">Documentation</div>
-        {renderDocsNav(DOCS_NAV)}
-      </aside>
-      <main className="docs-main">
-        <div
-          className="docs-resize-handle docs-resize-handle-right"
-          onPointerDown={beginDocsResize("right")}
-          onPointerMove={handleDocsResizeMove}
-          onPointerUp={endDocsResize}
-          onPointerCancel={endDocsResize}
-          aria-label="Resize docs panel"
-          role="separator"
-        />
-        <div className="docs-breadcrumbs">
-          <span>Learn Corpus Medica</span>
-          <span className="docs-breadcrumb-sep">›</span>
-          <strong>{docsKey.replace(/(^|\/)(\w)/g, (_m, sep, c) => `${sep}${c.toUpperCase()}`)}</strong>
-        </div>
-        <ReactMarkdown
-          remarkPlugins={[remarkGfm]}
-          components={{
-            h2: ({ children }) => {
-              const text = extractHeadingText(children);
-              const id = slugifyHeading(text);
-              return <h2 id={id}>{children}</h2>;
-            },
-            h3: ({ children }) => {
-              const text = extractHeadingText(children);
-              const id = slugifyHeading(text);
-              return <h3 id={id}>{children}</h3>;
-            },
-            h4: ({ children }) => {
-              const text = extractHeadingText(children);
-              const id = slugifyHeading(text);
-              return <h4 id={id}>{children}</h4>;
-            },
-          }}
-        >
-          {docsContent}
-        </ReactMarkdown>
-      </main>
-      <aside className="docs-toc">
-        <div className="docs-toc-title">On this page</div>
-        {docsHeadings.length > 0 ? (
-          <ul className="docs-toc-list">
-            {docsHeadings.map((heading) => (
-              <li key={heading.id} className={`level-${heading.level}`}>
-                <a href={`#${heading.id}`}>{heading.title}</a>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="docs-toc-empty">No sections detected.</p>
-        )}
-      </aside>
-    </div>
+  const workspacePage = (
+    <WorkspacePage
+      selectionLabel={selectionLabel}
+      selectionWarning={selectionWarning}
+      uploadPath={uploadPath}
+      authUser={authUser}
+      authRoleLabel={authRoleLabel}
+      authDisplayName={authDisplayName}
+      handleLogout={handleLogout}
+      enable3DViewer={enable3DViewer}
+      viewerMode={viewerMode}
+      setViewerMode={setViewerMode}
+      viewer3dMode={viewer3dMode}
+      setViewer3dMode={setViewer3dMode}
+      showLeftShelf={showLeftShelf}
+      setShowLeftShelf={setShowLeftShelf}
+      showRightShelf={showRightShelf}
+      setShowRightShelf={setShowRightShelf}
+      handleFileChange={handleFileChange}
+      handleUpload={handleUpload}
+      uploading={uploading}
+      files={files}
+      handleBackToWorkflow={handleBackToWorkflow}
+      workspaceShellRef={workspaceShellRef}
+      viewerError={viewerError}
+      viewerLoading={viewerLoading}
+      volumeInfo={volumeInfo}
+      axisSizes={axisSizes}
+      sliceIndex={sliceIndex}
+      sliceRequestIndex={sliceRequestIndex}
+      buildSliceUrl={buildSliceUrl}
+      imageRefs={imageRefs}
+      renderOverlay={renderOverlay}
+      canvasRefs={canvasRefs}
+      handlePointerDown={handlePointerDown}
+      handlePointerMove={handlePointerMove}
+      handlePointerUp={handlePointerUp}
+      setSliceIndex={setSliceIndex}
+      viewer3dLoading={viewer3dLoading}
+      meshLoading={meshLoading}
+      setViewerContainerRef={setViewerContainerRef}
+      setMeshContainerRef={setMeshContainerRef}
+      viewer3dError={viewer3dError}
+      meshError={meshError}
+      leftPanelRef={leftPanelRef}
+      rightPanelRef={rightPanelRef}
+      panelPositions={panelPositions}
+      panelSizes={panelSizes}
+      beginPanelDrag={beginPanelDrag}
+      beginPanelResize={beginPanelResize}
+      WORKSPACE_TOOLS={WORKSPACE_TOOLS}
+      workspaceTool={workspaceTool}
+      setWorkspaceTool={setWorkspaceTool}
+      brushSize={brushSize}
+      setBrushSize={setBrushSize}
+      overlayOpacity={overlayOpacity}
+      setOverlayOpacity={setOverlayOpacity}
+      handleUndo={handleUndo}
+      handleClearSlice={handleClearSlice}
+      handleClearAll={handleClearAll}
+      handleExportAnnotations={handleExportAnnotations}
+      meshTool={meshTool}
+      setMeshTool={setMeshTool}
+      meshSculptEnabled={meshSculptEnabled}
+      meshBrushSize={meshBrushSize}
+      setMeshBrushSize={setMeshBrushSize}
+      meshStrength={meshStrength}
+      setMeshStrength={setMeshStrength}
+      meshSelectionCount={meshSelectionCount}
+      meshPickedLabel={meshPickedLabel}
+      meshSelectionRadius={meshSelectionRadius}
+      setMeshSelectionRadius={setMeshSelectionRadius}
+      meshSelectionStrength={meshSelectionStrength}
+      setMeshSelectionStrength={setMeshSelectionStrength}
+      meshSelectionPrecision={meshSelectionPrecision}
+      setMeshSelectionPrecision={setMeshSelectionPrecision}
+      meshLabelEnabled={meshLabelEnabled}
+      setMeshLabelEnabled={setMeshLabelEnabled}
+      meshVertexCount={meshVertexCount}
+      nudgeMeshSelection={nudgeMeshSelection}
+      clearMeshSelection={clearMeshSelection}
+      clearMeshLabel={clearMeshLabel}
+      meshExplodeEnabled={meshExplodeEnabled}
+      setMeshExplodeEnabled={setMeshExplodeEnabled}
+      meshCanSculpt={meshCanSculpt}
+      sliceColormap={sliceColormap}
+      setSliceColormap={setSliceColormap}
+      SLICE_COLORMAPS={SLICE_COLORMAPS}
+      viewerChannel={viewerChannel}
+      setViewerChannel={setViewerChannel}
+      channelLabels={channelLabels}
+      volumeColormap={volumeColormap}
+      setVolumeColormap={setVolumeColormap}
+      VOLUME_COLORMAPS={VOLUME_COLORMAPS}
+      volumeOpacity={volumeOpacity}
+      setVolumeOpacity={setVolumeOpacity}
+      clipEnabled={clipEnabled}
+      setClipEnabled={setClipEnabled}
+      clipAxis={clipAxis}
+      setClipAxis={setClipAxis}
+      clipValue={clipValue}
+      setClipValue={setClipValue}
+      meshIso={meshIso}
+      setMeshIso={setMeshIso}
+      meshStep={meshStep}
+      setMeshStep={setMeshStep}
+      meshSource={meshSource}
+      setMeshSource={setMeshSource}
+      meshMaskAvailable={meshMaskAvailable}
+      meshVolumeEnabled={meshVolumeEnabled}
+      setMeshVolumeEnabled={setMeshVolumeEnabled}
+      meshVolumeColormap={meshVolumeColormap}
+      setMeshVolumeColormap={setMeshVolumeColormap}
+      meshVolumeOpacity={meshVolumeOpacity}
+      setMeshVolumeOpacity={setMeshVolumeOpacity}
+      meshOpacity={meshOpacity}
+      setMeshOpacity={setMeshOpacity}
+      meshVesselEnabled={meshVesselEnabled}
+      setMeshVesselEnabled={setMeshVesselEnabled}
+      meshVesselThreshold={meshVesselThreshold}
+      setMeshVesselThreshold={setMeshVesselThreshold}
+      meshVesselSigmaMin={meshVesselSigmaMin}
+      setMeshVesselSigmaMin={setMeshVesselSigmaMin}
+      meshVesselSigmaMax={meshVesselSigmaMax}
+      setMeshVesselSigmaMax={setMeshVesselSigmaMax}
+      meshVesselStep={meshVesselStep}
+      setMeshVesselStep={setMeshVesselStep}
+      meshOverlayEnabled={meshOverlayEnabled}
+      setMeshOverlayEnabled={setMeshOverlayEnabled}
+      meshOverlayOpacity={meshOverlayOpacity}
+      setMeshOverlayOpacity={setMeshOverlayOpacity}
+      meshOverlayIso={meshOverlayIso}
+      setMeshOverlayIso={setMeshOverlayIso}
+      meshOverlayStep={meshOverlayStep}
+      setMeshOverlayStep={setMeshOverlayStep}
+      meshOverlayLockEnabled={meshOverlayLockEnabled}
+      setMeshOverlayLockEnabled={setMeshOverlayLockEnabled}
+      meshOverlayLockTarget={meshOverlayLockTarget}
+      setMeshOverlayLockTarget={setMeshOverlayLockTarget}
+      MAX_MESH_PARTS={MAX_MESH_PARTS}
+      meshGroupCount={meshGroupCount}
+      setMeshGroupCount={setMeshGroupCount}
+      meshMaterialPreset={meshMaterialPreset}
+      setMeshMaterialPreset={setMeshMaterialPreset}
+      MESH_MATERIAL_PRESETS={MESH_MATERIAL_PRESETS}
+      meshWireframe={meshWireframe}
+      setMeshWireframe={setMeshWireframe}
+      meshClipEnabled={meshClipEnabled}
+      setMeshClipEnabled={setMeshClipEnabled}
+      meshClipAxis={meshClipAxis}
+      setMeshClipAxis={setMeshClipAxis}
+      meshClipValue={meshClipValue}
+      setMeshClipValue={setMeshClipValue}
+      meshExplodeDistance={meshExplodeDistance}
+      setMeshExplodeDistance={setMeshExplodeDistance}
+      meshIsolateEnabled={meshIsolateEnabled}
+      setMeshIsolateEnabled={setMeshIsolateEnabled}
+      meshPartCount={meshPartCount}
+      meshActiveGroup={meshActiveGroup}
+      stepMeshActiveGroup={stepMeshActiveGroup}
+      activePartOffset={activePartOffset}
+      updateActivePartOffset={updateActivePartOffset}
+      resetPartOffsets={resetPartOffsets}
+      hasPartOffsets={hasPartOffsets}
+      requestMeshRebuild={requestMeshRebuild}
+      handleAddLabel={handleAddLabel}
+      labels={labels}
+      activeLabelId={activeLabelId}
+      setActiveLabelId={setActiveLabelId}
+      handleLabelUpdate={handleLabelUpdate}
+      handleRemoveLabel={handleRemoveLabel}
+      activeSliceCount={activeSliceCount}
+      annotationSummary={annotationSummary}
+      labelMap={labelMap}
+      meshHint={meshHint}
+      activeAxis={activeAxis}
+      notices={notices}
+      workspaceUploads={workspaceUploads}
+      clearWorkspaceUploads={clearWorkspaceUploads}
+      workspacePath={workspacePath}
+      selectWorkspaceUpload={selectWorkspaceUpload}
+      addWorkspaceUploadToOverlay={addWorkspaceUploadToOverlay}
+      updateWorkspaceUpload={updateWorkspaceUpload}
+      meshOverlayItems={meshOverlayItems}
+      activeMeshOverlayId={activeMeshOverlayId}
+      setActiveMeshOverlayId={setActiveMeshOverlayId}
+      MESH_OVERLAY_LIMIT={MESH_OVERLAY_LIMIT}
+      meshOverlayDropActive={meshOverlayDropActive}
+      setMeshOverlayDropActive={setMeshOverlayDropActive}
+      handleMeshOverlayDrop={handleMeshOverlayDrop}
+      handleMeshOverlayFilesChange={handleMeshOverlayFilesChange}
+      meshOverlayFiles={meshOverlayFiles}
+      meshOverlayUploading={meshOverlayUploading}
+      removeMeshOverlayItem={removeMeshOverlayItem}
+      moveMeshOverlayItem={moveMeshOverlayItem}
+      updateMeshOverlayItem={updateMeshOverlayItem}
+      MESH_OVERLAY_MATERIAL_PRESETS={MESH_OVERLAY_MATERIAL_PRESETS}
+    />
   );
 
   if (showAuthGate) {
@@ -5411,1344 +8450,7 @@ export default function App() {
   }
 
   if (isWorkspace) {
-    return (
-      <div className="workspace workspace-blender">
-        <div className="ambient" aria-hidden="true" />
-        <div className="workspace-topbar">
-          <div className="workspace-brand">
-            <span>Corpus Medica</span>
-            <strong>Viewer Workspace</strong>
-          </div>
-          <div className="workspace-menu">
-            <button type="button">File</button>
-            <button type="button">Edit</button>
-            <button type="button">View</button>
-            <button type="button">Annotate</button>
-            <button type="button">Render</button>
-            <button type="button">Help</button>
-          </div>
-          <div className="workspace-top-actions">
-            <div className="workspace-status">
-              <span>{selectionLabel}</span>
-              {selectionWarning && (
-                <span className="warning">{selectionWarning}</span>
-              )}
-              {uploadPath && (
-                <span className="meta-chip">Path: {uploadPath}</span>
-              )}
-            </div>
-            {authUser && (
-              <div className="workspace-user">
-                <span className="role">{authRoleLabel}</span>
-                <span className="name">{authDisplayName}</span>
-                <button type="button" onClick={handleLogout}>
-                  Sign out
-                </button>
-              </div>
-            )}
-            {enable3DViewer && (
-              <div className="mode-toggle">
-                <button
-                  type="button"
-                  className={viewerMode === "2d" ? "active" : ""}
-                  onClick={() => setViewerMode("2d")}
-                >
-                  2D
-                </button>
-                <button
-                  type="button"
-                  className={viewerMode === "3d" ? "active" : ""}
-                  onClick={() => setViewerMode("3d")}
-                >
-                  3D
-                </button>
-              </div>
-            )}
-            <div className="workspace-shelf-toggle">
-              <button
-                type="button"
-                className={showLeftShelf ? "active" : ""}
-                onClick={() => setShowLeftShelf((prev) => !prev)}
-                aria-pressed={showLeftShelf}
-              >
-                {showLeftShelf ? "Hide left" : "Show left"}
-              </button>
-              <button
-                type="button"
-                className={showRightShelf ? "active" : ""}
-                onClick={() => setShowRightShelf((prev) => !prev)}
-                aria-pressed={showRightShelf}
-              >
-                {showRightShelf ? "Hide right" : "Show right"}
-              </button>
-            </div>
-            <div className="workspace-upload">
-              <label className="btn btn-secondary btn-small" htmlFor="workspace-upload">
-                Choose files
-              </label>
-              <input
-                id="workspace-upload"
-                type="file"
-                multiple
-                onChange={handleFileChange}
-              />
-              <button
-                type="button"
-                className="btn btn-accent btn-small"
-                onClick={handleUpload}
-                disabled={uploading || files.length === 0 || Boolean(selectionWarning)}
-              >
-                {uploading ? "Uploading..." : "Upload"}
-              </button>
-              <button
-                type="button"
-                className="btn btn-ghost btn-small"
-                onClick={handleBackToWorkflow}
-              >
-                Back
-              </button>
-            </div>
-          </div>
-        </div>
-
-        <div className="workspace-shell" ref={workspaceShellRef}>
-          <main className="workspace-viewport">
-            <div className="viewport-header">
-              <div>
-                <div className="viewport-title">Scan workspace</div>
-                <div className="viewport-subtitle">
-                  Toggle between 2D annotation and 3D exploration.
-                </div>
-              </div>
-              {enable3DViewer && (
-                <div className="viewer-tabs-row">
-                  <div className="viewer-tabs">
-                    <button
-                      type="button"
-                      className={`viewer-tab ${viewerMode === "2d" ? "active" : ""}`}
-                      onClick={() => setViewerMode("2d")}
-                    >
-                      2D slices
-                    </button>
-                    <button
-                      type="button"
-                      className={`viewer-tab ${viewerMode === "3d" ? "active" : ""}`}
-                      onClick={() => setViewerMode("3d")}
-                    >
-                      3D
-                    </button>
-                  </div>
-                  {viewerMode === "3d" && (
-                    <div className="viewer-subtabs">
-                      <button
-                        type="button"
-                        className={`viewer-tab ${viewer3dMode === "volume" ? "active" : ""}`}
-                        onClick={() => setViewer3dMode("volume")}
-                      >
-                        Volume
-                      </button>
-                      <button
-                        type="button"
-                        className={`viewer-tab ${viewer3dMode === "mesh" ? "active" : ""}`}
-                        onClick={() => setViewer3dMode("mesh")}
-                      >
-                        Mesh
-                      </button>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-
-            {viewerError && (
-              <div className="banner banner-error" role="alert">
-                {viewerError}
-              </div>
-            )}
-
-            <div
-              className={`viewport-area ${
-                viewerMode === "2d" ? "viewport-2d" : "viewport-3d"
-              }`}
-            >
-              {!uploadPath && (
-                <div className="viewer-empty">
-                  Upload scans to start annotating.
-                </div>
-              )}
-
-              {uploadPath && viewerMode === "2d" && (
-                <>
-                  {viewerLoading && (
-                    <div className="viewer-loading skeleton">
-                      <div className="skeleton-line wide" />
-                      <div className="skeleton-line" />
-                      <div className="skeleton-line short" />
-                    </div>
-                  )}
-                  {!viewerLoading && volumeInfo && axisSizes && (
-                    <div className="viewer-grid">
-                      {(["sagittal", "coronal", "axial"] as AxisKey[]).map(
-                        (axis) => (
-                          <div className="viewer-panel" key={axis}>
-                            <div className="viewer-panel-head">
-                              <span className="viewer-label">{axis}</span>
-                              <span className="viewer-index">
-                                {sliceIndex[axis]} / {axisSizes[axis] - 1}
-                              </span>
-                            </div>
-                            <div className="viewer-image viewer-image-annotated">
-                              <img
-                                ref={(node) => {
-                                  imageRefs.current[axis] = node;
-                                }}
-                                src={buildSliceUrl(axis, sliceRequestIndex[axis])}
-                                alt={`${axis} slice`}
-                                loading="lazy"
-                                decoding="async"
-                                onLoad={() => renderOverlay(axis)}
-                              />
-                              <canvas
-                                ref={(node) => {
-                                  canvasRefs.current[axis] = node;
-                                }}
-                                data-axis={axis}
-                                onPointerDown={handlePointerDown}
-                                onPointerMove={handlePointerMove}
-                                onPointerUp={handlePointerUp}
-                                onPointerCancel={handlePointerUp}
-                                onPointerLeave={handlePointerUp}
-                              />
-                            </div>
-                            <input
-                              className="viewer-slider"
-                              type="range"
-                              min={0}
-                              max={Math.max(axisSizes[axis] - 1, 0)}
-                              value={sliceIndex[axis]}
-                              onChange={(event) => {
-                                const value = Number(event.target.value);
-                                setSliceIndex((prev) => ({
-                                  ...prev,
-                                  [axis]: value,
-                                }));
-                              }}
-                              disabled={axisSizes[axis] <= 1}
-                            />
-                          </div>
-                        )
-                      )}
-                    </div>
-                  )}
-                  {viewerMode === "2d" && !viewerLoading && !volumeInfo && (
-                    <p className="muted">Viewer not available for this upload.</p>
-                  )}
-                </>
-              )}
-
-              {uploadPath && viewerMode === "3d" && (
-                <div className="viewer-3d">
-                  <div className="viewer-3d-frame">
-                    {viewer3dMode === "volume" && (
-                      <div
-                        className="viewer-3d-canvas"
-                        ref={setViewerContainerRef}
-                      />
-                    )}
-                    {viewer3dMode === "mesh" && (
-                      <div
-                        className={`viewer-3d-canvas viewer-3d-mesh viewer-3d-mesh-${meshTool}`}
-                        ref={setMeshContainerRef}
-                      />
-                    )}
-                    {viewer3dMode === "volume" && viewer3dLoading && (
-                      <div className="viewer-3d-loading">Loading volume...</div>
-                    )}
-                    {viewer3dMode === "mesh" && meshLoading && (
-                      <div className="viewer-3d-loading">Building mesh...</div>
-                    )}
-                  </div>
-                  {viewer3dMode === "volume" && viewer3dError && (
-                    <div className="banner banner-error" role="alert">
-                      {viewer3dError}
-                    </div>
-                  )}
-                  {viewer3dMode === "mesh" && meshError && (
-                    <div className="banner banner-error" role="alert">
-                      {meshError}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          </main>
-
-          {!showLeftShelf && (
-            <button
-              type="button"
-              className="workspace-dock workspace-dock-left"
-              onClick={() => setShowLeftShelf(true)}
-            >
-              Show left shelf
-            </button>
-          )}
-          {!showRightShelf && (
-            <button
-              type="button"
-              className="workspace-dock workspace-dock-right"
-              onClick={() => setShowRightShelf(true)}
-            >
-              Show right shelf
-            </button>
-          )}
-
-          {showLeftShelf && (
-            <div
-              className="workspace-float workspace-float-left"
-              ref={leftPanelRef}
-              style={{
-                transform: `translate3d(${panelPositions.left.x}px, ${panelPositions.left.y}px, 0)`,
-                width: panelSizes.left.width,
-                height: panelSizes.left.height,
-              }}
-            >
-              <div
-                className="workspace-float-handle"
-                onPointerDown={beginPanelDrag("left")}
-              >
-                Tool Shelf
-              </div>
-              <div className="workspace-float-content">
-                {viewerMode === "2d" && (
-                  <>
-                    <div className="workspace-card">
-                      <h3>Tools</h3>
-                      <div className="tool-grid">
-                        {WORKSPACE_TOOLS.map((tool) => (
-                          <button
-                            key={tool.id}
-                            type="button"
-                            className={`tool-button ${
-                              workspaceTool === tool.id ? "active" : ""
-                            }`}
-                            onClick={() => setWorkspaceTool(tool.id)}
-                          >
-                            {tool.label}
-                          </button>
-                        ))}
-                      </div>
-                      <div className="workspace-control">
-                        <label>
-                          Brush size
-                          <input
-                            type="range"
-                            min={4}
-                            max={40}
-                            value={brushSize}
-                            onChange={(event) =>
-                              setBrushSize(Number(event.target.value))
-                            }
-                          />
-                        </label>
-                        <strong>{brushSize}px</strong>
-                      </div>
-                      <div className="workspace-control">
-                        <label>
-                          Overlay opacity
-                          <input
-                            type="range"
-                            min={0.2}
-                            max={0.95}
-                            step={0.05}
-                            value={overlayOpacity}
-                            onChange={(event) =>
-                              setOverlayOpacity(Number(event.target.value))
-                            }
-                          />
-                        </label>
-                        <strong>{Math.round(overlayOpacity * 100)}%</strong>
-                      </div>
-                    </div>
-
-                    <div className="workspace-card">
-                      <h3>Actions</h3>
-                      <div className="action-grid">
-                        <button
-                          type="button"
-                          className="btn btn-secondary"
-                          onClick={handleUndo}
-                        >
-                          Undo
-                        </button>
-                        <button
-                          type="button"
-                          className="btn btn-secondary"
-                          onClick={handleClearSlice}
-                        >
-                          Clear slice
-                        </button>
-                        <button
-                          type="button"
-                          className="btn btn-secondary"
-                          onClick={handleClearAll}
-                        >
-                          Clear all
-                        </button>
-                        <button
-                          type="button"
-                          className="btn btn-accent"
-                          onClick={handleExportAnnotations}
-                        >
-                          Export JSON
-                        </button>
-                      </div>
-                    </div>
-                  </>
-                )}
-
-                {viewerMode === "3d" && viewer3dMode === "mesh" && (
-                  <div className="workspace-card">
-                    <h3>Mesh sculpt</h3>
-                    <div className="tool-grid">
-                      {([
-                        { id: "orbit", label: "Orbit" },
-                        { id: "select", label: "Select" },
-                        { id: "sculpt", label: "Sculpt" },
-                        { id: "carve", label: "Carve" },
-                      ] as Array<{ id: MeshTool; label: string }>).map(
-                        (tool) => (
-                          <button
-                            key={tool.id}
-                            type="button"
-                            className={`tool-button ${
-                              meshTool === tool.id ? "active" : ""
-                            }`}
-                            onClick={() => setMeshTool(tool.id)}
-                            disabled={
-                              (tool.id === "sculpt" || tool.id === "carve") &&
-                              !meshSculptEnabled
-                            }
-                          >
-                            {tool.label}
-                          </button>
-                        )
-                      )}
-                    </div>
-                    <div className="workspace-control">
-                      <label>
-                        Brush radius
-                        <input
-                          type="range"
-                          min={4}
-                          max={48}
-                          value={meshBrushSize}
-                          onChange={(event) =>
-                            setMeshBrushSize(Number(event.target.value))
-                          }
-                          disabled={!meshSculptEnabled || meshTool === "select"}
-                        />
-                      </label>
-                      <strong>{meshBrushSize}px</strong>
-                    </div>
-                    <div className="workspace-control">
-                      <label>
-                        Strength
-                        <input
-                          type="range"
-                          min={0.1}
-                          max={1}
-                          step={0.05}
-                          value={meshStrength}
-                          onChange={(event) =>
-                            setMeshStrength(Number(event.target.value))
-                          }
-                          disabled={!meshSculptEnabled || meshTool === "select"}
-                        />
-                      </label>
-                      <strong>{Math.round(meshStrength * 100)}%</strong>
-                    </div>
-                    <div className="mesh-selection">
-                      <div className="mesh-selection-head">
-                        <span>Selection</span>
-                        <span className="mesh-selection-count">
-                          {meshSelectionCount} voxels
-                        </span>
-                      </div>
-                      <div className="workspace-control">
-                        <label>
-                          Pick radius
-                          <input
-                            type="range"
-                            min={0.5}
-                            max={12}
-                            step={0.5}
-                            value={meshSelectionRadius}
-                            onChange={(event) =>
-                              setMeshSelectionRadius(Number(event.target.value))
-                            }
-                            disabled={meshTool !== "select"}
-                          />
-                        </label>
-                        <strong>{meshSelectionRadius.toFixed(1)}%</strong>
-                      </div>
-                      <div className="workspace-control">
-                        <label>
-                          Nudge strength
-                          <input
-                            type="range"
-                            min={0.2}
-                            max={1}
-                            step={0.05}
-                            value={meshSelectionStrength}
-                            onChange={(event) =>
-                              setMeshSelectionStrength(Number(event.target.value))
-                            }
-                            disabled={meshTool !== "select"}
-                          />
-                          </label>
-                        <strong>{Math.round(meshSelectionStrength * 100)}%</strong>
-                      </div>
-                      <label className="mesh-selection-toggle">
-                        <input
-                          type="checkbox"
-                          checked={meshSelectionPrecision}
-                          onChange={(event) =>
-                            setMeshSelectionPrecision(event.target.checked)
-                          }
-                          disabled={meshTool !== "select"}
-                        />
-                        <span>Precision pick (slower)</span>
-                      </label>
-                      {meshSelectionPrecision && meshVertexCount > 180000 && (
-                        <div className="mesh-selection-note">
-                          Precision pick can lag on dense meshes.
-                        </div>
-                      )}
-                      <div className="mesh-selection-actions">
-                        <button
-                          type="button"
-                          className="btn btn-secondary btn-small"
-                          onClick={() => nudgeMeshSelection(1)}
-                          disabled={!meshSelectionCount}
-                        >
-                          Nudge +
-                        </button>
-                        <button
-                          type="button"
-                          className="btn btn-secondary btn-small"
-                          onClick={() => nudgeMeshSelection(-1)}
-                          disabled={!meshSelectionCount}
-                        >
-                          Nudge -
-                        </button>
-                        <button
-                          type="button"
-                          className="btn btn-ghost btn-small"
-                          onClick={clearMeshSelection}
-                          disabled={!meshSelectionCount}
-                        >
-                          Clear
-                        </button>
-                      </div>
-                    </div>
-                    {meshExplodeEnabled && (
-                      <div className="mesh-warning mesh-warning-accent">
-                        Explode view is active. Sculpting is disabled, but selection
-                        and isolate controls still work.
-                      </div>
-                    )}
-                    {!meshCanSculpt && !meshExplodeEnabled && (
-                      <div className="mesh-warning">
-                        Sculpting is disabled for dense meshes. Increase the
-                        mesh step or reduce the iso complexity, or use Select
-                        to isolate and nudge.
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {viewerMode === "3d" && viewer3dMode === "volume" && (
-                  <div className="workspace-card">
-                    <h3>3D navigation</h3>
-                    <p className="muted">
-                      Drag to rotate, scroll to zoom, right-click to pan.
-                    </p>
-                  </div>
-                )}
-              </div>
-              <div
-                className="panel-resizer panel-resizer-nw"
-                onPointerDown={beginPanelResize("left", "nw")}
-              />
-              <div
-                className="panel-resizer panel-resizer-ne"
-                onPointerDown={beginPanelResize("left", "ne")}
-              />
-              <div
-                className="panel-resizer panel-resizer-sw"
-                onPointerDown={beginPanelResize("left", "sw")}
-              />
-              <div
-                className="panel-resizer panel-resizer-se"
-                onPointerDown={beginPanelResize("left", "se")}
-              />
-            </div>
-          )}
-
-          {showRightShelf && (
-            <div
-              className="workspace-float workspace-float-right"
-              ref={rightPanelRef}
-              style={{
-                transform: `translate3d(${panelPositions.right.x}px, ${panelPositions.right.y}px, 0)`,
-                width: panelSizes.right.width,
-                height: panelSizes.right.height,
-              }}
-            >
-              <div
-                className="workspace-float-handle"
-                onPointerDown={beginPanelDrag("right")}
-              >
-                Properties
-              </div>
-              <div className="workspace-float-content">
-                <div className="workspace-card">
-                  <h3>Workspace files</h3>
-                  {workspaceUploads.length === 0 ? (
-                    <p className="muted">No uploads yet. Add files to begin.</p>
-                  ) : (
-                    <div className="workspace-file-list">
-                      {workspaceUploads.map((item, index) => {
-                        const isActive = item.path === workspacePath;
-                        return (
-                          <button
-                            key={item.path}
-                            type="button"
-                            className={`workspace-file ${isActive ? "active" : ""}`}
-                            onClick={() => selectWorkspaceUpload(index)}
-                          >
-                            <span className="workspace-file-name">{item.label}</span>
-                            <span className="workspace-file-meta">
-                              {item.kind.toUpperCase()}
-                            </span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-                {enable3DViewer && (
-                  <div className="workspace-card">
-                    <h3>View mode</h3>
-                    <div className="mode-toggle">
-                      <button
-                        type="button"
-                        className={viewerMode === "2d" ? "active" : ""}
-                        onClick={() => setViewerMode("2d")}
-                      >
-                        2D slices
-                      </button>
-                      <button
-                        type="button"
-                        className={viewerMode === "3d" ? "active" : ""}
-                        onClick={() => setViewerMode("3d")}
-                      >
-                        3D
-                      </button>
-                    </div>
-                    {viewerMode === "3d" && (
-                      <div className="viewer-subtabs">
-                        <button
-                          type="button"
-                          className={`viewer-tab ${viewer3dMode === "volume" ? "active" : ""}`}
-                          onClick={() => setViewer3dMode("volume")}
-                        >
-                          Volume
-                        </button>
-                        <button
-                          type="button"
-                          className={`viewer-tab ${viewer3dMode === "mesh" ? "active" : ""}`}
-                          onClick={() => setViewer3dMode("mesh")}
-                        >
-                          Mesh
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                )}
-                <div className="workspace-card">
-                  <h3>Viewport settings</h3>
-                  {viewerMode === "2d" && (
-                    <>
-                      <div className="viewer-controls">
-                        <label className="viewer-control">
-                          <span>Color map</span>
-                          <select
-                            value={sliceColormap}
-                            onChange={(event) =>
-                              setSliceColormap(event.target.value as SliceColorMap)
-                            }
-                          >
-                            {SLICE_COLORMAPS.map((map) => (
-                              <option key={map.id} value={map.id}>
-                                {map.label}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                      </div>
-                      {volumeInfo && volumeInfo.channels > 1 && (
-                        <div className="viewer-channel">
-                          <div className="viewer-channel-head">
-                            <span>Channel</span>
-                            <strong>
-                              {viewerChannel + 1} / {volumeInfo.channels}
-                            </strong>
-                          </div>
-                          <input
-                            className="viewer-slider"
-                            type="range"
-                            min={0}
-                            max={volumeInfo.channels - 1}
-                            value={viewerChannel}
-                            onChange={(event) =>
-                              setViewerChannel(Number(event.target.value))
-                            }
-                          />
-                          {channelLabels.length === volumeInfo.channels && (
-                            <div className="viewer-channel-tags">
-                              {channelLabels.map((label, index) => (
-                                <button
-                                  key={label}
-                                  type="button"
-                                  className={`viewer-tag ${
-                                    viewerChannel === index ? "active" : ""
-                                  }`}
-                                  onClick={() => setViewerChannel(index)}
-                                >
-                                  {label}
-                                </button>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </>
-                  )}
-
-                  {viewerMode === "3d" && viewer3dMode === "volume" && (
-                    <>
-                      <div className="viewer-controls">
-                        <label className="viewer-control">
-                          <span>Color map</span>
-                          <select
-                            value={volumeColormap}
-                            onChange={(event) =>
-                              setVolumeColormap(
-                                event.target.value as VolumeColorMap
-                              )
-                            }
-                          >
-                            {VOLUME_COLORMAPS.map((map) => (
-                              <option key={map.id} value={map.id}>
-                                {map.label}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                        <label className="viewer-control">
-                          <span>Opacity</span>
-                          <input
-                            type="range"
-                            min={0.2}
-                            max={1}
-                            step={0.05}
-                            value={volumeOpacity}
-                            onChange={(event) =>
-                              setVolumeOpacity(Number(event.target.value))
-                            }
-                          />
-                        </label>
-                        <label className="viewer-control">
-                          <span>Clipping</span>
-                          <div className="clip-toggle">
-                            <input
-                              type="checkbox"
-                              checked={clipEnabled}
-                              onChange={(event) =>
-                                setClipEnabled(event.target.checked)
-                              }
-                            />
-                            <select
-                              value={clipAxis}
-                              onChange={(event) =>
-                                setClipAxis(event.target.value as ClipAxis)
-                              }
-                              disabled={!clipEnabled}
-                            >
-                              <option value="x">X</option>
-                              <option value="y">Y</option>
-                              <option value="z">Z</option>
-                            </select>
-                          </div>
-                          <input
-                            type="range"
-                            min={0}
-                            max={1}
-                            step={0.01}
-                            value={clipValue}
-                            onChange={(event) =>
-                              setClipValue(Number(event.target.value))
-                            }
-                            disabled={!clipEnabled}
-                          />
-                        </label>
-                      </div>
-                      {volumeInfo && volumeInfo.channels > 1 && (
-                        <div className="viewer-channel">
-                          <div className="viewer-channel-head">
-                            <span>Channel</span>
-                            <strong>
-                              {viewerChannel + 1} / {volumeInfo.channels}
-                            </strong>
-                          </div>
-                          <input
-                            className="viewer-slider"
-                            type="range"
-                            min={0}
-                            max={volumeInfo.channels - 1}
-                            value={viewerChannel}
-                            onChange={(event) =>
-                              setViewerChannel(Number(event.target.value))
-                            }
-                          />
-                          {channelLabels.length === volumeInfo.channels && (
-                            <div className="viewer-channel-tags">
-                              {channelLabels.map((label, index) => (
-                                <button
-                                  key={label}
-                                  type="button"
-                                  className={`viewer-tag ${
-                                    viewerChannel === index ? "active" : ""
-                                  }`}
-                                  onClick={() => setViewerChannel(index)}
-                                >
-                                  {label}
-                                </button>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </>
-                  )}
-
-                  {viewerMode === "3d" && viewer3dMode === "mesh" && (
-                    <>
-                      <div className="viewer-controls viewer-controls-stack">
-                        <label className="viewer-control">
-                          <span>Iso threshold</span>
-                          <input
-                            type="range"
-                            min={0}
-                            max={1}
-                            step={0.01}
-                            value={meshIso}
-                            onChange={(event) =>
-                              setMeshIso(Number(event.target.value))
-                            }
-                          />
-                          <span className="viewer-control-value">
-                            {meshIso.toFixed(2)}
-                          </span>
-                        </label>
-                        <label className="viewer-control">
-                          <span>Mesh step</span>
-                          <input
-                            type="range"
-                            min={1}
-                            max={6}
-                            step={1}
-                            value={meshStep}
-                            onChange={(event) =>
-                              setMeshStep(Number(event.target.value))
-                            }
-                          />
-                          <span className="viewer-control-value">
-                            {meshStep}
-                          </span>
-                        </label>
-                        <label className="viewer-control">
-                          <span>Mesh source</span>
-                          <select
-                            value={meshSource}
-                            onChange={(event) =>
-                              setMeshSource(event.target.value as MeshSource)
-                            }
-                          >
-                            <option value="scan">Scan intensity</option>
-                            <option value="mask" disabled={!meshMaskAvailable}>
-                              Segmentation mask
-                            </option>
-                          </select>
-                          {!meshMaskAvailable && (
-                            <span className="viewer-control-note">
-                              Run a segmentation to enable mask meshes.
-                            </span>
-                          )}
-                        </label>
-                        <label className="viewer-control">
-                          <span>Tumor overlay</span>
-                          <div className="clip-toggle">
-                            <input
-                              type="checkbox"
-                              checked={meshOverlayEnabled}
-                              onChange={(event) =>
-                                setMeshOverlayEnabled(event.target.checked)
-                              }
-                              disabled={!meshMaskAvailable || meshSource === "mask"}
-                            />
-                            <span className="viewer-control-value">
-                              {meshOverlayEnabled &&
-                              meshMaskAvailable &&
-                              meshSource !== "mask"
-                                ? "On"
-                                : "Off"}
-                            </span>
-                          </div>
-                          {meshSource === "mask" && (
-                            <span className="viewer-control-note">
-                              Overlay uses the mask. Switch source to Scan to
-                              see both.
-                            </span>
-                          )}
-                        </label>
-                        {meshOverlayEnabled &&
-                          meshMaskAvailable &&
-                          meshSource !== "mask" && (
-                            <>
-                              <label className="viewer-control">
-                                <span>Tumor opacity</span>
-                                <input
-                                  type="range"
-                                  min={0.15}
-                                  max={0.9}
-                                  step={0.05}
-                                  value={meshOverlayOpacity}
-                                  onChange={(event) =>
-                                    setMeshOverlayOpacity(
-                                      Number(event.target.value)
-                                    )
-                                  }
-                                />
-                                <span className="viewer-control-value">
-                                  {Math.round(meshOverlayOpacity * 100)}%
-                                </span>
-                              </label>
-                              <label className="viewer-control">
-                                <span>Mask iso</span>
-                                <input
-                                  type="range"
-                                  min={0}
-                                  max={1}
-                                  step={0.01}
-                                  value={meshOverlayIso}
-                                  onChange={(event) =>
-                                    setMeshOverlayIso(Number(event.target.value))
-                                  }
-                                />
-                                <span className="viewer-control-value">
-                                  {meshOverlayIso.toFixed(2)}
-                                </span>
-                              </label>
-                              <label className="viewer-control">
-                                <span>Mask step</span>
-                                <input
-                                  type="range"
-                                  min={1}
-                                  max={4}
-                                  step={1}
-                                  value={meshOverlayStep}
-                                  onChange={(event) =>
-                                    setMeshOverlayStep(Number(event.target.value))
-                                  }
-                                />
-                                <span className="viewer-control-value">
-                                  {meshOverlayStep}
-                                </span>
-                              </label>
-                            </>
-                          )}
-                        <label className="viewer-control">
-                          <span>Group count</span>
-                          <input
-                            type="range"
-                            min={1}
-                            max={MAX_MESH_PARTS}
-                            step={1}
-                            value={meshGroupCount}
-                            onChange={(event) =>
-                              setMeshGroupCount(Number(event.target.value))
-                            }
-                          />
-                          <span className="viewer-control-value">
-                            {meshGroupCount}
-                          </span>
-                        </label>
-                        <label className="viewer-control">
-                          <span>Material preset</span>
-                          <select
-                            value={meshMaterialPreset}
-                            onChange={(event) =>
-                              setMeshMaterialPreset(
-                                event.target.value as MeshMaterialPreset
-                              )
-                            }
-                          >
-                            {Object.entries(MESH_MATERIAL_PRESETS).map(
-                              ([id, preset]) => (
-                                <option key={id} value={id}>
-                                  {preset.label}
-                                </option>
-                              )
-                            )}
-                          </select>
-                        </label>
-                        <label className="viewer-control">
-                          <span>Wireframe</span>
-                          <input
-                            type="checkbox"
-                            checked={meshWireframe}
-                            onChange={(event) =>
-                              setMeshWireframe(event.target.checked)
-                            }
-                          />
-                        </label>
-                        <label className="viewer-control">
-                          <span>Clipping</span>
-                          <div className="clip-toggle">
-                            <input
-                              type="checkbox"
-                              checked={meshClipEnabled}
-                              onChange={(event) =>
-                                setMeshClipEnabled(event.target.checked)
-                              }
-                            />
-                            <select
-                              value={meshClipAxis}
-                              onChange={(event) =>
-                                setMeshClipAxis(event.target.value as ClipAxis)
-                              }
-                              disabled={!meshClipEnabled}
-                            >
-                              <option value="x">X</option>
-                              <option value="y">Y</option>
-                              <option value="z">Z</option>
-                            </select>
-                          </div>
-                          <input
-                            type="range"
-                            min={0}
-                            max={1}
-                            step={0.01}
-                            value={meshClipValue}
-                            onChange={(event) =>
-                              setMeshClipValue(Number(event.target.value))
-                            }
-                            disabled={!meshClipEnabled}
-                          />
-                        </label>
-                        <div className="mesh-explode">
-                          <div className="mesh-explode-head">
-                            <span>Explode view</span>
-                            <label className="mesh-explode-toggle">
-                              <input
-                                type="checkbox"
-                                checked={meshExplodeEnabled}
-                                onChange={(event) =>
-                                  setMeshExplodeEnabled(event.target.checked)
-                                }
-                              />
-                              <span>
-                                {meshExplodeEnabled ? "Active" : "Off"}
-                              </span>
-                            </label>
-                          </div>
-                          <input
-                            type="range"
-                            min={0}
-                            max={1}
-                            step={0.02}
-                            value={meshExplodeDistance}
-                            onChange={(event) =>
-                              setMeshExplodeDistance(Number(event.target.value))
-                            }
-                            disabled={!meshExplodeEnabled}
-                          />
-                          <div className="mesh-explode-meta">
-                            <span>Separation</span>
-                            <strong>
-                              {Math.round(meshExplodeDistance * 100)}%
-                            </strong>
-                          </div>
-                        </div>
-                        <div className="mesh-isolate">
-                          <div className="mesh-isolate-head">
-                            <span>Isolate part</span>
-                            <label className="mesh-explode-toggle">
-                              <input
-                                type="checkbox"
-                                checked={meshIsolateEnabled}
-                                onChange={(event) =>
-                                  setMeshIsolateEnabled(event.target.checked)
-                                }
-                                disabled={meshPartCount <= 1}
-                              />
-                              <span>
-                                {meshIsolateEnabled ? "On" : "Off"}
-                              </span>
-                            </label>
-                          </div>
-                          <div className="mesh-isolate-controls">
-                            <button
-                              type="button"
-                              className="btn btn-ghost btn-small"
-                              onClick={() => stepMeshActiveGroup(-1)}
-                              disabled={meshPartCount <= 1}
-                            >
-                              Prev
-                            </button>
-                            <span className="mesh-isolate-count">
-                              {meshPartCount ? meshActiveGroup + 1 : 0} /{" "}
-                              {meshPartCount || 1}
-                            </span>
-                            <button
-                              type="button"
-                              className="btn btn-ghost btn-small"
-                              onClick={() => stepMeshActiveGroup(1)}
-                              disabled={meshPartCount <= 1}
-                            >
-                              Next
-                            </button>
-                          </div>
-                          <div className="mesh-isolate-offset">
-                            <label>
-                              Active offset
-                              <input
-                                type="range"
-                                min={-1}
-                                max={1}
-                                step={0.05}
-                                value={activePartOffset}
-                                onChange={(event) =>
-                                  updateActivePartOffset(
-                                    Number(event.target.value)
-                                  )
-                                }
-                                disabled={!meshPartCount}
-                              />
-                            </label>
-                            <strong>
-                              {Math.round(activePartOffset * 100)}%
-                            </strong>
-                            <button
-                              type="button"
-                              className="btn btn-ghost btn-small"
-                              onClick={resetPartOffsets}
-                              disabled={!hasPartOffsets}
-                            >
-                              Reset
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                      {volumeInfo && volumeInfo.channels > 1 && (
-                        <div className="viewer-channel">
-                          <div className="viewer-channel-head">
-                            <span>Channel</span>
-                            <strong>
-                              {viewerChannel + 1} / {volumeInfo.channels}
-                            </strong>
-                          </div>
-                          <input
-                            className="viewer-slider"
-                            type="range"
-                            min={0}
-                            max={volumeInfo.channels - 1}
-                            value={viewerChannel}
-                            onChange={(event) =>
-                              setViewerChannel(Number(event.target.value))
-                            }
-                          />
-                          {channelLabels.length === volumeInfo.channels && (
-                            <div className="viewer-channel-tags">
-                              {channelLabels.map((label, index) => (
-                                <button
-                                  key={label}
-                                  type="button"
-                                  className={`viewer-tag ${
-                                    viewerChannel === index ? "active" : ""
-                                  }`}
-                                  onClick={() => setViewerChannel(index)}
-                                >
-                                  {label}
-                                </button>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      )}
-                      <div className="mesh-actions">
-                        <button
-                          type="button"
-                          className="btn btn-secondary btn-small"
-                          onClick={requestMeshRebuild}
-                        >
-                          Rebuild mesh
-                        </button>
-                        <div className="mesh-meta">
-                          <span>Vertices</span>
-                          <strong>{meshVertexCount.toLocaleString()}</strong>
-                        </div>
-                        <div className="mesh-meta">
-                          <span>Parts</span>
-                          <strong>{meshPartCount || 1}</strong>
-                        </div>
-                      </div>
-                    </>
-                  )}
-                </div>
-
-                <div className="workspace-card">
-                  <div className="workspace-card-head">
-                    <h3>Labels</h3>
-                    <button
-                      type="button"
-                      className="btn btn-ghost btn-small"
-                      onClick={handleAddLabel}
-                    >
-                      Add
-                    </button>
-                  </div>
-                  <div className="label-list">
-                    {labels.map((label) => (
-                      <div
-                        key={label.id}
-                        className={`label-item ${
-                          activeLabelId === label.id ? "active" : ""
-                        }`}
-                      >
-                        <button
-                          type="button"
-                          className="label-select"
-                          onClick={() => setActiveLabelId(label.id)}
-                        >
-                          <span
-                            className="label-swatch"
-                            style={{ backgroundColor: label.color }}
-                          />
-                        </button>
-                        <input
-                          type="text"
-                          value={label.name}
-                          onChange={(event) =>
-                            handleLabelUpdate(label.id, { name: event.target.value })
-                          }
-                        />
-                        <input
-                          type="color"
-                          value={label.color}
-                          onChange={(event) =>
-                            handleLabelUpdate(label.id, { color: event.target.value })
-                          }
-                        />
-                        <button
-                          type="button"
-                          className="label-remove"
-                          onClick={() => handleRemoveLabel(label.id)}
-                          disabled={labels.length <= 1}
-                        >
-                          ?
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="workspace-card">
-                  <h3>Scan info</h3>
-                  {volumeInfo ? (
-                    <div className="meta-list">
-                      <div>Shape: {volumeInfo.shape.join(" x ")}</div>
-                      <div>Channels: {volumeInfo.channels}</div>
-                      {volumeInfo.zooms && (
-                        <div>Voxel size: {volumeInfo.zooms.join(" x ")}</div>
-                      )}
-                    </div>
-                  ) : (
-                    <p className="muted">Upload a scan to see metadata.</p>
-                  )}
-                </div>
-
-                <div className="workspace-card">
-                  <h3>Annotation summary</h3>
-                  <div className="meta-list">
-                    <div>Active slice: {activeSliceCount}</div>
-                    <div>Total annotations: {annotationSummary.total}</div>
-                    <div>Brush strokes: {annotationSummary.strokes}</div>
-                    <div>Rectangles: {annotationSummary.rects}</div>
-                    <div>Measurements: {annotationSummary.measures}</div>
-                  </div>
-                </div>
-              </div>
-              <div
-                className="panel-resizer panel-resizer-nw"
-                onPointerDown={beginPanelResize("right", "nw")}
-              />
-              <div
-                className="panel-resizer panel-resizer-ne"
-                onPointerDown={beginPanelResize("right", "ne")}
-              />
-              <div
-                className="panel-resizer panel-resizer-sw"
-                onPointerDown={beginPanelResize("right", "sw")}
-              />
-              <div
-                className="panel-resizer panel-resizer-se"
-                onPointerDown={beginPanelResize("right", "se")}
-              />
-            </div>
-          )}
-        </div>
-
-        <div className="workspace-bottombar">
-          <span>
-            Tool: {workspaceTool} | Label: {labelMap.get(activeLabelId)?.name ?? "None"}
-          </span>
-          <span className="workspace-hint">
-            {viewerMode === "3d"
-              ? viewer3dMode === "mesh"
-                ? meshHint
-                : "Drag to rotate, scroll to zoom, right-click to pan."
-              : "Use brush/erase to paint, drag to create ROIs, click-drag to measure."}
-          </span>
-          {volumeInfo && (
-            <span>
-              Slice {sliceIndex[activeAxis] + 1} / {axisSizes?.[activeAxis] ?? 1}
-            </span>
-          )}
-        </div>
-
-        <div className="toast-stack" aria-live="polite">
-          {notices.map((notice) => (
-            <div key={notice.id} className={`toast toast-${notice.type}`}>
-              <strong>{notice.title}</strong>
-              <p>{notice.message}</p>
-            </div>
-          ))}
-        </div>
-      </div>
-    );
+    return workspacePage;
   }
 
   return (
@@ -6973,6 +8675,16 @@ export default function App() {
           >
             {uploading ? "Uploading..." : uploadResult ? "Re-upload" : "Upload scan"}
           </button>
+          {!isWorkspace && (uploadResult || uploadPreview || files.length > 0) && (
+            <button
+              type="button"
+              className="btn btn-ghost"
+              onClick={clearOverviewUpload}
+              disabled={uploading}
+            >
+              Clear
+            </button>
+          )}
           {uploadResult && (
             <div className="upload-meta">
               <span className="status-dot status-done" />
