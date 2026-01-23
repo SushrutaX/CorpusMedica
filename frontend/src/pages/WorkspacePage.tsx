@@ -221,6 +221,8 @@ const WorkspacePage = (props: WorkspacePageProps) => {
     updateMeshOverlayItem,
     MESH_OVERLAY_MATERIAL_PRESETS,
   } = props;
+  const activeWorkspaceItem =
+    workspaceUploads.find((item: any) => item.path === workspacePath) ?? null;
 
   const overlayMaterialPresets =
     MESH_OVERLAY_MATERIAL_PRESETS as Array<{ id: string; label: string }>;
@@ -850,7 +852,13 @@ const WorkspacePage = (props: WorkspacePageProps) => {
                       <button
                         type="button"
                         className="btn btn-ghost btn-small"
-                        onClick={clearWorkspaceUploads}
+                        onPointerDown={(event) => {
+                          event.stopPropagation();
+                        }}
+                        onClick={() => {
+                          if (workspaceUploads.length === 0) return;
+                          clearWorkspaceUploads();
+                        }}
                         disabled={workspaceUploads.length === 0}
                       >
                         Clear
@@ -901,6 +909,68 @@ const WorkspacePage = (props: WorkspacePageProps) => {
                           </div>
                         );
                       })}
+                    </div>
+                  )}
+                  {activeWorkspaceItem && (
+                    <div className="workspace-file-transform">
+                      <div className="mesh-overlay-transform">
+                        <div className="mesh-overlay-transform-row">
+                          <span>Move</span>
+                          {(["X", "Y", "Z"] as const).map((axis, idx) => {
+                            const position =
+                              activeWorkspaceItem.position ?? [0, 0, 0];
+                            return (
+                              <label key={axis}>
+                                {axis}
+                                <input
+                                  type="number"
+                                  step={1}
+                                  value={position[idx] ?? 0}
+                                  onChange={(event) => {
+                                    const next = [...position] as [
+                                      number,
+                                      number,
+                                      number,
+                                    ];
+                                    next[idx] = Number(event.target.value);
+                                    updateWorkspaceUpload(activeWorkspaceItem.path, {
+                                      position: next,
+                                    });
+                                  }}
+                                />
+                              </label>
+                            );
+                          })}
+                        </div>
+                        <div className="mesh-overlay-transform-row">
+                          <span>Rotate</span>
+                          {(["X", "Y", "Z"] as const).map((axis, idx) => {
+                            const rotation =
+                              activeWorkspaceItem.rotation ?? [0, 0, 0];
+                            return (
+                              <label key={axis}>
+                                {axis}
+                                <input
+                                  type="number"
+                                  step={1}
+                                  value={rotation[idx] ?? 0}
+                                  onChange={(event) => {
+                                    const next = [...rotation] as [
+                                      number,
+                                      number,
+                                      number,
+                                    ];
+                                    next[idx] = Number(event.target.value);
+                                    updateWorkspaceUpload(activeWorkspaceItem.path, {
+                                      rotation: next,
+                                    });
+                                  }}
+                                />
+                              </label>
+                            );
+                          })}
+                        </div>
+                      </div>
                     </div>
                   )}
                 </div>
