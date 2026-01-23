@@ -54,11 +54,13 @@ type WorkspaceUploadItem = {
   kind: string;
   createdAt: string;
   visible: boolean;
+  position?: [number, number, number];
+  rotation?: [number, number, number];
 };
 
 type WorkspaceUploadCacheItem = Pick<
   WorkspaceUploadItem,
-  "path" | "label" | "kind" | "createdAt" | "visible"
+  "path" | "label" | "kind" | "createdAt" | "visible" | "position" | "rotation"
 >;
 
 type SegmentResponse = {
@@ -301,6 +303,25 @@ type MeshOverlayVolume = {
   explodeDistance?: number;
 };
 
+type OverviewCache = {
+  uploadResult?: UploadResponse;
+  uploadPreview?: UploadPreview;
+  previewPath?: string;
+  volumeInfo?: VolumeInfo;
+  sliceIndex?: SliceIndex;
+  sliceRequestIndex?: SliceIndex;
+  viewerChannel?: number;
+  viewerMode?: ViewerMode;
+  viewer3dMode?: Viewer3DMode;
+  sliceColormap?: SliceColorMap;
+  volumeColormap?: VolumeColorMap;
+  volumeOpacity?: number;
+  clipEnabled?: boolean;
+  clipAxis?: ClipAxis;
+  clipValue?: number;
+  selectedModelId?: string;
+};
+
 type MeshViewerState = {
   three: any;
   plyLoader?: new () => {
@@ -443,6 +464,7 @@ const AUTH_REFRESH_KEY = "medai_auth_refresh";
 const WORKSPACE_UPLOADS_CACHE_KEY = "medai_workspace_uploads_v1";
 const MESH_OVERLAY_CACHE_KEY = "medai_mesh_overlay_v1";
 const WORKSPACE_SETTINGS_CACHE_KEY = "medai_workspace_settings_v1";
+const OVERVIEW_CACHE_KEY = "medai_overview_state_v1";
 
 const SKELETONS = Array.from({ length: 3 }, (_, index) => index);
 const enable3DViewer =
@@ -852,6 +874,13 @@ export default function App() {
   const meshOverlayOpacityRef = useRef<number>(meshOverlayOpacity);
   const activeMeshOverlayIdRef = useRef<string | null>(activeMeshOverlayId);
   const workspaceItemVisibleRef = useRef<boolean>(true);
+  const workspaceTransformRef = useRef<{
+    position: [number, number, number];
+    rotation: [number, number, number];
+  }>({
+    position: [0, 0, 0],
+    rotation: [0, 0, 0],
+  });
   const annotationsRef = useRef<Record<string, AnnotationSet>>({});
   const drawingRef = useRef<DrawingState | null>(null);
   const canvasRefs = useRef<Record<AxisKey, HTMLCanvasElement | null>>({
@@ -869,13 +898,25 @@ export default function App() {
   const rightPanelRef = useRef<HTMLDivElement | null>(null);
   const loginScreenRef = useRef<HTMLDivElement | null>(null);
   const slicePrefetchRef = useRef<SliceIndex | null>(null);
+  const volumeInfoPathRef = useRef<string>("");
+  const volumeInfoRequestRef = useRef<string>("");
+  const volumeInfoRequestTimeRef = useRef<number>(0);
+  const previewPathRef = useRef<string>("");
   const setViewerContainerRef = useCallback((node: HTMLDivElement | null) => {
+    if (!node) {
+      viewerRef.current = null;
+      return;
+    }
     if (viewerRef.current !== node) {
       viewerRef.current = node;
       setViewerMountKey((prev) => prev + 1);
     }
   }, []);
   const setMeshContainerRef = useCallback((node: HTMLDivElement | null) => {
+    if (!node) {
+      meshViewerRef.current = null;
+      return;
+    }
     if (meshViewerRef.current !== node) {
       meshViewerRef.current = node;
       setMeshMountKey((prev) => prev + 1);
@@ -921,7 +962,7 @@ export default function App() {
     const path = params.get("path") ?? "";
     const view = params.get("view");
     const mode = params.get("mode");
-    if (path !== workspacePath) {
+    if (path && path !== workspacePath) {
       setWorkspacePath(path);
     }
     if (view === "2d" || view === "3d") {
@@ -982,21 +1023,41 @@ export default function App() {
       if (!Array.isArray(parsed)) return;
       const normalized = parsed
         .filter((item) => item && typeof item === "object")
-        .map((item) => ({
-          path: typeof item.path === "string" ? item.path : "",
-          label:
-            typeof item.label === "string" && item.label.length > 0
-              ? item.label
-              : typeof item.path === "string"
-                ? item.path
-                : "Scan",
-          kind: typeof item.kind === "string" ? item.kind : "nifti",
-          createdAt:
-            typeof item.createdAt === "string"
-              ? item.createdAt
-              : new Date().toISOString(),
-          visible: typeof item.visible === "boolean" ? item.visible : true,
-        }))
+        .map((item) => {
+          const position: [number, number, number] =
+            Array.isArray(item.position) && item.position.length === 3
+              ? [
+                  Number(item.position[0]) || 0,
+                  Number(item.position[1]) || 0,
+                  Number(item.position[2]) || 0,
+                ]
+              : [0, 0, 0];
+          const rotation: [number, number, number] =
+            Array.isArray(item.rotation) && item.rotation.length === 3
+              ? [
+                  Number(item.rotation[0]) || 0,
+                  Number(item.rotation[1]) || 0,
+                  Number(item.rotation[2]) || 0,
+                ]
+              : [0, 0, 0];
+          return {
+            path: typeof item.path === "string" ? item.path : "",
+            label:
+              typeof item.label === "string" && item.label.length > 0
+                ? item.label
+                : typeof item.path === "string"
+                  ? item.path
+                  : "Scan",
+            kind: typeof item.kind === "string" ? item.kind : "nifti",
+            createdAt:
+              typeof item.createdAt === "string"
+                ? item.createdAt
+                : new Date().toISOString(),
+            visible: typeof item.visible === "boolean" ? item.visible : true,
+            position,
+            rotation,
+          };
+        })
         .filter((item) => item.path.length > 0);
       if (normalized.length === 0) return;
       setWorkspaceUploads(normalized);
@@ -1102,6 +1163,7 @@ export default function App() {
   }, []);
 
   const workspaceSettingsLoadedRef = useRef<boolean>(false);
+  const overviewSettingsLoadedRef = useRef<boolean>(false);
 
   useEffect(() => {
     if (!isWorkspace || workspaceSettingsLoadedRef.current) return;
@@ -1288,15 +1350,129 @@ export default function App() {
   }, [isWorkspace, location.search]);
 
   useEffect(() => {
+    if (isWorkspace || overviewSettingsLoadedRef.current) return;
+    overviewSettingsLoadedRef.current = true;
+    const raw = localStorage.getItem(OVERVIEW_CACHE_KEY);
+    if (!raw) return;
+    try {
+      const parsed = JSON.parse(raw) as OverviewCache;
+      if (!parsed || typeof parsed !== "object") return;
+      if (parsed.uploadResult) {
+        setUploadResult(parsed.uploadResult);
+      }
+      if (parsed.uploadPreview) {
+        setUploadPreview(parsed.uploadPreview);
+      }
+      if (typeof parsed.previewPath === "string") {
+        setPreviewPath(parsed.previewPath);
+      }
+      if (parsed.volumeInfo) {
+        setVolumeInfo(parsed.volumeInfo);
+      }
+      if (parsed.sliceIndex) {
+        setSliceIndex(parsed.sliceIndex);
+      }
+      if (parsed.sliceRequestIndex) {
+        setSliceRequestIndex(parsed.sliceRequestIndex);
+      }
+      if (typeof parsed.viewerChannel === "number") {
+        setViewerChannel(parsed.viewerChannel);
+      }
+      if (parsed.viewerMode === "2d" || parsed.viewerMode === "3d") {
+        setViewerMode(parsed.viewerMode);
+      }
+      if (parsed.viewer3dMode === "volume" || parsed.viewer3dMode === "mesh") {
+        setViewer3dMode(parsed.viewer3dMode);
+      }
+      if (
+        typeof parsed.sliceColormap === "string" &&
+        SLICE_COLORMAPS.some((item) => item.id === parsed.sliceColormap)
+      ) {
+        setSliceColormap(parsed.sliceColormap);
+      }
+      if (
+        typeof parsed.volumeColormap === "string" &&
+        VOLUME_COLORMAPS.some((item) => item.id === parsed.volumeColormap)
+      ) {
+        setVolumeColormap(parsed.volumeColormap);
+      }
+      if (typeof parsed.volumeOpacity === "number") {
+        setVolumeOpacity(Math.max(0.1, Math.min(parsed.volumeOpacity, 1)));
+      }
+      if (typeof parsed.clipEnabled === "boolean") {
+        setClipEnabled(parsed.clipEnabled);
+      }
+      if (
+        parsed.clipAxis === "x" ||
+        parsed.clipAxis === "y" ||
+        parsed.clipAxis === "z"
+      ) {
+        setClipAxis(parsed.clipAxis);
+      }
+      if (typeof parsed.clipValue === "number") {
+        setClipValue(Math.max(0, Math.min(parsed.clipValue, 1)));
+      }
+      if (typeof parsed.selectedModelId === "string") {
+        setSelectedModelId(parsed.selectedModelId);
+      }
+    } catch {
+      // ignore cache errors
+    }
+  }, [isWorkspace]);
+
+  useEffect(() => {
     const payload: WorkspaceUploadCacheItem[] = workspaceUploads.map((item) => ({
       path: item.path,
       label: item.label,
       kind: item.kind,
       createdAt: item.createdAt,
       visible: item.visible,
+      position: item.position,
+      rotation: item.rotation,
     }));
     localStorage.setItem(WORKSPACE_UPLOADS_CACHE_KEY, JSON.stringify(payload));
   }, [workspaceUploads]);
+
+  useEffect(() => {
+    if (isWorkspace || !overviewSettingsLoadedRef.current) return;
+    const payload: OverviewCache = {
+      uploadResult: uploadResult ?? undefined,
+      uploadPreview: uploadPreview ?? undefined,
+      previewPath: previewPath || undefined,
+      volumeInfo: volumeInfo ?? undefined,
+      sliceIndex,
+      sliceRequestIndex,
+      viewerChannel,
+      viewerMode,
+      viewer3dMode,
+      sliceColormap,
+      volumeColormap,
+      volumeOpacity,
+      clipEnabled,
+      clipAxis,
+      clipValue,
+      selectedModelId,
+    };
+    localStorage.setItem(OVERVIEW_CACHE_KEY, JSON.stringify(payload));
+  }, [
+    isWorkspace,
+    uploadResult,
+    uploadPreview,
+    previewPath,
+    volumeInfo,
+    sliceIndex,
+    sliceRequestIndex,
+    viewerChannel,
+    viewerMode,
+    viewer3dMode,
+    sliceColormap,
+    volumeColormap,
+    volumeOpacity,
+    clipEnabled,
+    clipAxis,
+    clipValue,
+    selectedModelId,
+  ]);
 
   useEffect(() => {
     const payload: MeshOverlayCacheItem[] = meshOverlayItems.map((item) => ({
@@ -1458,6 +1634,14 @@ export default function App() {
   }, [isWorkspace, workspacePath]);
 
   useEffect(() => {
+    if (!isWorkspace) return;
+    if (workspacePath) return;
+    if (workspaceUploads.length === 0) return;
+    setWorkspacePath(workspaceUploads[0].path);
+    setActiveWorkspaceIndex(0);
+  }, [isWorkspace, workspacePath, workspaceUploads]);
+
+  useEffect(() => {
     if (!isWorkspace) return undefined;
     const updatePositions = () => {
       const rightWidth = panelSizes.right.width;
@@ -1541,7 +1725,7 @@ export default function App() {
   const reportRiskClass = reportRiskLevel
     ? `report-risk-${reportRiskLevel}`
     : "";
-  const uploadPath = workspacePath || uploadResult?.saved_path || "";
+  const uploadPath = isWorkspace ? workspacePath : uploadResult?.saved_path || "";
   const isAuthenticated = Boolean(authToken && authUser);
   const authDisplayName = authUser?.email || authUser?.username || "User";
   const authRoleLabel = authUser?.role || "";
@@ -1616,6 +1800,75 @@ export default function App() {
       meshState.meshGroup.visible = baseVisible;
     }
   }, [isWorkspace, workspaceItemVisible]);
+
+  useEffect(() => {
+    if (!isWorkspace) return;
+    const position = activeWorkspaceItem?.position ?? [0, 0, 0];
+    const rotation = activeWorkspaceItem?.rotation ?? [0, 0, 0];
+    const nextPosition: [number, number, number] = [
+      Number(position[0]) || 0,
+      Number(position[1]) || 0,
+      Number(position[2]) || 0,
+    ];
+    const nextRotation: [number, number, number] = [
+      Number(rotation[0]) || 0,
+      Number(rotation[1]) || 0,
+      Number(rotation[2]) || 0,
+    ];
+    workspaceTransformRef.current = {
+      position: nextPosition,
+      rotation: nextRotation,
+    };
+    const viewerState = viewer3dStateRef.current;
+    if (viewerState?.volume) {
+      if (typeof viewerState.volume.setPosition === "function") {
+        viewerState.volume.setPosition(
+          nextPosition[0],
+          nextPosition[1],
+          nextPosition[2]
+        );
+      }
+      if (typeof viewerState.volume.setOrientation === "function") {
+        viewerState.volume.setOrientation(
+          nextRotation[0],
+          nextRotation[1],
+          nextRotation[2]
+        );
+      }
+      viewerState.renderWindow?.render?.();
+    }
+    const meshVolumeState = meshVolumeStateRef.current;
+    if (meshVolumeState?.volume) {
+      if (typeof meshVolumeState.volume.setPosition === "function") {
+        meshVolumeState.volume.setPosition(
+          nextPosition[0],
+          nextPosition[1],
+          nextPosition[2]
+        );
+      }
+      if (typeof meshVolumeState.volume.setOrientation === "function") {
+        meshVolumeState.volume.setOrientation(
+          nextRotation[0],
+          nextRotation[1],
+          nextRotation[2]
+        );
+      }
+      meshVolumeState.renderWindow?.render?.();
+    }
+    const meshState = meshStateRef.current;
+    if (meshState?.meshGroup) {
+      meshState.meshGroup.position.set(
+        nextPosition[0],
+        nextPosition[1],
+        nextPosition[2]
+      );
+      meshState.meshGroup.rotation.set(
+        (nextRotation[0] * Math.PI) / 180,
+        (nextRotation[1] * Math.PI) / 180,
+        (nextRotation[2] * Math.PI) / 180
+      );
+    }
+  }, [isWorkspace, activeWorkspaceItem]);
 
   const resolveAuthStepFromPath = useCallback((path: string): AuthStep => {
     if (path === "/login/forgot") return "forgot-request";
@@ -1796,6 +2049,17 @@ export default function App() {
   }, [jobStatus, loadHistory, isAuthenticated]);
 
   const fetchVolumeInfo = useCallback(async (path: string) => {
+    if (volumeInfoPathRef.current === path) {
+      return;
+    }
+    if (volumeInfoRequestRef.current === path) {
+      const elapsed = Date.now() - volumeInfoRequestTimeRef.current;
+      if (elapsed < 1500) {
+        return;
+      }
+    }
+    volumeInfoRequestRef.current = path;
+    volumeInfoRequestTimeRef.current = Date.now();
     try {
       setViewerError("");
       setViewerLoading(true);
@@ -1805,18 +2069,25 @@ export default function App() {
       if (!res.ok) throw new Error(`Viewer API failed (${res.status})`);
       const data = (await res.json()) as VolumeInfo;
       setVolumeInfo(data);
+      volumeInfoPathRef.current = path;
     } catch (e: unknown) {
       const message =
         e instanceof Error ? e.message : "Failed to load volume metadata.";
       setViewerError(message);
       setVolumeInfo(null);
+      volumeInfoPathRef.current = "";
     } finally {
       setViewerLoading(false);
+      if (volumeInfoRequestRef.current === path) {
+        volumeInfoRequestRef.current = "";
+      }
     }
   }, [apiFetch]);
 
   useEffect(() => {
     if (!uploadPath) {
+      volumeInfoPathRef.current = "";
+      volumeInfoRequestRef.current = "";
       setVolumeInfo(null);
       setViewerError("");
       return;
@@ -1827,11 +2098,14 @@ export default function App() {
 
   useEffect(() => {
     if (!uploadPath) {
+      previewPathRef.current = "";
       setPreviewPath("");
       return;
     }
     if (AUTH_REQUIRED && !isAuthenticated) return;
     if (previewPath === uploadPath) return;
+    if (previewPathRef.current === uploadPath) return;
+    previewPathRef.current = uploadPath;
     const fetchPreview = async () => {
       try {
         const previewRes = await apiFetch(
@@ -1843,6 +2117,10 @@ export default function App() {
         setPreviewPath(uploadPath);
       } catch {
         // no-op
+      } finally {
+        if (previewPathRef.current === uploadPath) {
+          previewPathRef.current = "";
+        }
       }
     };
     void fetchPreview();
@@ -1954,12 +2232,13 @@ export default function App() {
       (item) => item.status === "done" && Boolean(item.outputs?.mask_path)
     );
     if (!candidates.length) return "";
-    if (uploadPath) {
-      const match = candidates.find((item) => item.input_path === uploadPath);
-      if (match) return match.outputs.mask_path;
+    if (!uploadPath) {
+      return isWorkspace ? "" : candidates[0]?.outputs?.mask_path ?? "";
     }
+    const match = candidates.find((item) => item.input_path === uploadPath);
+    if (match) return match.outputs.mask_path;
     return candidates[0]?.outputs?.mask_path ?? "";
-  }, [jobHistory, uploadPath]);
+  }, [jobHistory, uploadPath, isWorkspace]);
 
   const meshMaskPath =
     jobResult?.outputs?.mask_path && jobResult.outputs.mask_path.length > 0
@@ -3161,6 +3440,14 @@ export default function App() {
         const volume = vtkVolume.newInstance();
         volume.setMapper(volumeMapper);
         volume.setVisibility(workspaceItemVisibleRef.current);
+        if (typeof volume.setPosition === "function") {
+          const { position } = workspaceTransformRef.current;
+          volume.setPosition(position[0], position[1], position[2]);
+        }
+        if (typeof volume.setOrientation === "function") {
+          const { rotation } = workspaceTransformRef.current;
+          volume.setOrientation(rotation[0], rotation[1], rotation[2]);
+        }
 
         const ctfun = vtkColorTransferFunction.newInstance();
         const ofun = vtkPiecewiseFunction.newInstance();
@@ -3212,7 +3499,7 @@ export default function App() {
 
         const resize = () => {
           const bounds = container.getBoundingClientRect();
-          const dpr = window.devicePixelRatio || 1;
+          const dpr = Math.min(window.devicePixelRatio || 1, 1.25);
           openGLRenderWindow.setSize(
             Math.max(1, Math.floor(bounds.width * dpr)),
             Math.max(1, Math.floor(bounds.height * dpr))
@@ -3352,7 +3639,8 @@ export default function App() {
           antialias: true,
           alpha: true,
         });
-        renderer.setPixelRatio(window.devicePixelRatio || 1);
+        const maxDpr = 1.25;
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, maxDpr));
         const hasVolumeUnderlay = Boolean(volumeLayer);
         renderer.setClearColor(0x0b0b0b, hasVolumeUnderlay ? 0 : 1);
         renderer.localClippingEnabled = true;
@@ -3570,6 +3858,14 @@ export default function App() {
               const volume = vtkVolume.newInstance();
               volume.setMapper(volumeMapper);
               volume.setVisibility(workspaceItemVisibleRef.current);
+              if (typeof volume.setPosition === "function") {
+                const { position } = workspaceTransformRef.current;
+                volume.setPosition(position[0], position[1], position[2]);
+              }
+              if (typeof volume.setOrientation === "function") {
+                const { rotation } = workspaceTransformRef.current;
+                volume.setOrientation(rotation[0], rotation[1], rotation[2]);
+              }
               const ctfun = vtkColorTransferFunction.newInstance();
               const ofun = vtkPiecewiseFunction.newInstance();
               applyOverlayTransfer(
@@ -3698,7 +3994,7 @@ export default function App() {
 
             const resizeVolume = () => {
               const bounds = volumeLayer.getBoundingClientRect();
-              const dpr = window.devicePixelRatio || 1;
+              const dpr = Math.min(window.devicePixelRatio || 1, 1.25);
               openGLRenderWindow.setSize(
                 Math.max(1, Math.floor(bounds.width * dpr)),
                 Math.max(1, Math.floor(bounds.height * dpr))
@@ -3816,6 +4112,15 @@ export default function App() {
 
         const meshGroup = new THREE.Group();
         meshGroup.visible = workspaceItemVisibleRef.current;
+        {
+          const { position, rotation } = workspaceTransformRef.current;
+          meshGroup.position.set(position[0], position[1], position[2]);
+          meshGroup.rotation.set(
+            (rotation[0] * Math.PI) / 180,
+            (rotation[1] * Math.PI) / 180,
+            (rotation[2] * Math.PI) / 180
+          );
+        }
         const positions = sourceGeometry.attributes.position
           .array as Float32Array;
         const totalVertices = sourceGeometry.attributes.position.count;
@@ -4726,14 +5031,27 @@ export default function App() {
 
         let animationId = 0;
         let lastTime = performance.now();
+        let lastRenderTime = 0;
+        const targetFrameMs = 1000 / 30;
+        const idleFrameMs = 1000 / 6;
         const animate = () => {
           animationId = window.requestAnimationFrame(animate);
+          if (document.hidden) return;
           const now = performance.now();
           const delta = Math.min(0.05, (now - lastTime) / 1000);
           lastTime = now;
 
+          let hasActivity = false;
           flyDelta.set(0, 0, 0);
-          if (keyState.w || keyState.a || keyState.s || keyState.d || keyState.q || keyState.e) {
+          if (
+            keyState.w ||
+            keyState.a ||
+            keyState.s ||
+            keyState.d ||
+            keyState.q ||
+            keyState.e
+          ) {
+            hasActivity = true;
             camera.getWorldDirection(flyForward);
             flyForward.normalize();
             flyRight.copy(flyForward).cross(camera.up).normalize();
@@ -4751,7 +5069,26 @@ export default function App() {
               controls.target.add(flyDelta);
             }
           }
-          controls.update();
+          if (
+            ctrlOrbitActive ||
+            orbitOverrideActive ||
+            panOverrideActive ||
+            meshSculptingRef.current ||
+            meshPendingRef.current ||
+            transformState.mode ||
+            transformPending ||
+            transformPointerId !== null
+          ) {
+            hasActivity = true;
+          }
+          const controlsChanged = controls.update();
+          if (controlsChanged) {
+            hasActivity = true;
+          }
+          const frameInterval = hasActivity ? targetFrameMs : idleFrameMs;
+          if (now - lastRenderTime < frameInterval) return;
+          lastRenderTime = now;
+
           renderer.render(scene, camera);
           if (meshVolumeStateRef.current) {
             const vtkCamera = meshVolumeStateRef.current.renderer.getActiveCamera();
@@ -5542,6 +5879,24 @@ export default function App() {
     }
   };
 
+  const clearOverviewUpload = useCallback(() => {
+    if (isWorkspace) return;
+    setFiles([]);
+    setUploadResult(null);
+    setUploadPreview(null);
+    setPreviewPath("");
+    setVolumeInfo(null);
+    setViewerError("");
+    setViewerLoading(false);
+    setJobId("");
+    setJobStatus(null);
+    setJobResult(null);
+    volumeInfoPathRef.current = "";
+    volumeInfoRequestRef.current = "";
+    previewPathRef.current = "";
+    pushNotice("info", "Upload cleared", "Overview scan state reset.");
+  }, [isWorkspace, pushNotice]);
+
   const uploadMeshOverlayFiles = async (selected: File[]) => {
     if (selected.length === 0) return;
     const remaining = Math.max(
@@ -6107,6 +6462,8 @@ export default function App() {
           kind,
           createdAt: new Date().toISOString(),
           visible: true,
+          position: [0, 0, 0],
+          rotation: [0, 0, 0],
         });
       };
 
@@ -6158,17 +6515,20 @@ export default function App() {
         }
       }
 
+      if (workspaceItems.length > 0) {
+        setWorkspaceUploads((prev) => {
+          const next = [
+            ...workspaceItems,
+            ...prev.filter(
+              (item) => !workspaceItems.some((entry) => entry.path === item.path)
+            ),
+          ];
+          return next;
+        });
+      }
+
       if (isWorkspace) {
         if (workspaceItems.length > 0) {
-          setWorkspaceUploads((prev) => {
-            const next = [
-              ...workspaceItems,
-              ...prev.filter(
-                (item) => !workspaceItems.some((entry) => entry.path === item.path)
-              ),
-            ];
-            return next;
-          });
           const nextPath = workspaceItems[0].path;
           setWorkspacePath(nextPath);
           setActiveWorkspaceIndex(0);
@@ -8315,6 +8675,16 @@ export default function App() {
           >
             {uploading ? "Uploading..." : uploadResult ? "Re-upload" : "Upload scan"}
           </button>
+          {!isWorkspace && (uploadResult || uploadPreview || files.length > 0) && (
+            <button
+              type="button"
+              className="btn btn-ghost"
+              onClick={clearOverviewUpload}
+              disabled={uploading}
+            >
+              Clear
+            </button>
+          )}
           {uploadResult && (
             <div className="upload-meta">
               <span className="status-dot status-done" />
