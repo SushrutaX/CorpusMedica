@@ -1,3 +1,5 @@
+import { useEffect, useRef, useState } from "react";
+
 type AxisKey = "sagittal" | "coronal" | "axial";
 type MeshTool = "orbit" | "sculpt" | "carve" | "select" | "label";
 type SliceColorMap = string;
@@ -101,6 +103,16 @@ const WorkspacePage = (props: WorkspacePageProps) => {
     setMeshSelectionPrecision,
     meshLabelEnabled,
     setMeshLabelEnabled,
+    meshAnatomyEnabled,
+    setMeshAnatomyEnabled,
+    meshAnatomyPreset,
+    setMeshAnatomyPreset,
+    meshSignalEnabled,
+    setMeshSignalEnabled,
+    meshSignalSpeed,
+    setMeshSignalSpeed,
+    meshSignalTargetId,
+    setMeshSignalTargetId,
     meshVertexCount,
     nudgeMeshSelection,
     clearMeshSelection,
@@ -140,16 +152,6 @@ const WorkspacePage = (props: WorkspacePageProps) => {
     setMeshVolumeOpacity,
     meshOpacity,
     setMeshOpacity,
-    meshVesselEnabled,
-    setMeshVesselEnabled,
-    meshVesselThreshold,
-    setMeshVesselThreshold,
-    meshVesselSigmaMin,
-    setMeshVesselSigmaMin,
-    meshVesselSigmaMax,
-    setMeshVesselSigmaMax,
-    meshVesselStep,
-    setMeshVesselStep,
     meshOverlayEnabled,
     setMeshOverlayEnabled,
     meshOverlayOpacity,
@@ -223,6 +225,11 @@ const WorkspacePage = (props: WorkspacePageProps) => {
   } = props;
   const activeWorkspaceItem =
     workspaceUploads.find((item: any) => item.path === workspacePath) ?? null;
+  const [openMenu, setOpenMenu] = useState<
+    "file" | "edit" | "view" | "annotate" | "render" | "help" | null
+  >(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const uploadInputRef = useRef<HTMLInputElement | null>(null);
 
   const overlayMaterialPresets =
     MESH_OVERLAY_MATERIAL_PRESETS as Array<{ id: string; label: string }>;
@@ -240,21 +247,500 @@ const WorkspacePage = (props: WorkspacePageProps) => {
     overlayOrderMap.set(item.id, index + 1);
   });
 
+  useEffect(() => {
+    const handleClick = (event: MouseEvent) => {
+      if (!menuRef.current?.contains(event.target as Node)) {
+        setOpenMenu(null);
+      }
+    };
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setOpenMenu(null);
+      }
+    };
+    document.addEventListener("mousedown", handleClick);
+    window.addEventListener("keydown", handleKey);
+    return () => {
+      document.removeEventListener("mousedown", handleClick);
+      window.removeEventListener("keydown", handleKey);
+    };
+  }, []);
+
+  const toggleMenu = (
+    name: "file" | "edit" | "view" | "annotate" | "render" | "help"
+  ) => {
+    setOpenMenu((prev) => (prev === name ? null : name));
+  };
+
   return (
-      <div className="workspace workspace-blender">
+      <div className="workspace workspace-blender workspace-neo">
         <div className="ambient" aria-hidden="true" />
         <div className="workspace-topbar">
           <div className="workspace-brand">
             <span>Corpus Medica</span>
             <strong>Viewer Workspace</strong>
           </div>
-          <div className="workspace-menu">
-            <button type="button">File</button>
-            <button type="button">Edit</button>
-            <button type="button">View</button>
-            <button type="button">Annotate</button>
-            <button type="button">Render</button>
-            <button type="button">Help</button>
+          <div className="workspace-menu" ref={menuRef}>
+            <div className="menu-group">
+              <button
+                type="button"
+                className={`menu-button ${openMenu === "file" ? "active" : ""}`}
+                onClick={() => toggleMenu("file")}
+                aria-expanded={openMenu === "file"}
+              >
+                File
+              </button>
+              {openMenu === "file" && (
+                <div className="menu-panel" role="menu">
+                  <button
+                    type="button"
+                    className="menu-item"
+                    onClick={() => {
+                      uploadInputRef.current?.click();
+                      setOpenMenu(null);
+                    }}
+                  >
+                    Choose files
+                  </button>
+                  <button
+                    type="button"
+                    className="menu-item"
+                    onClick={() => {
+                      handleUpload();
+                      setOpenMenu(null);
+                    }}
+                    disabled={
+                      uploading || files.length === 0 || Boolean(selectionWarning)
+                    }
+                  >
+                    Upload selected
+                  </button>
+                  <button
+                    type="button"
+                    className="menu-item"
+                    onClick={() => {
+                      clearWorkspaceUploads();
+                      setOpenMenu(null);
+                    }}
+                    disabled={!workspaceUploads.length}
+                  >
+                    Clear workspace files
+                  </button>
+                  <div className="menu-divider" />
+                  <button
+                    type="button"
+                    className="menu-item"
+                    onClick={() => {
+                      handleExportAnnotations();
+                      setOpenMenu(null);
+                    }}
+                    disabled={annotationSummary.total === 0}
+                  >
+                    Export annotations
+                  </button>
+                  <button
+                    type="button"
+                    className="menu-item"
+                    onClick={() => {
+                      handleBackToWorkflow();
+                      setOpenMenu(null);
+                    }}
+                  >
+                    Back to overview
+                  </button>
+                </div>
+              )}
+            </div>
+            <div className="menu-group">
+              <button
+                type="button"
+                className={`menu-button ${openMenu === "edit" ? "active" : ""}`}
+                onClick={() => toggleMenu("edit")}
+                aria-expanded={openMenu === "edit"}
+              >
+                Edit
+              </button>
+              {openMenu === "edit" && (
+                <div className="menu-panel" role="menu">
+                  <span className="menu-section">Annotations</span>
+                  <button
+                    type="button"
+                    className="menu-item"
+                    onClick={() => {
+                      handleUndo();
+                      setOpenMenu(null);
+                    }}
+                  >
+                    Undo
+                  </button>
+                  <button
+                    type="button"
+                    className="menu-item"
+                    onClick={() => {
+                      handleClearSlice();
+                      setOpenMenu(null);
+                    }}
+                  >
+                    Clear slice
+                  </button>
+                  <button
+                    type="button"
+                    className="menu-item"
+                    onClick={() => {
+                      handleClearAll();
+                      setOpenMenu(null);
+                    }}
+                  >
+                    Clear all
+                  </button>
+                  <div className="menu-divider" />
+                  <span className="menu-section">Mesh edits</span>
+                  <button
+                    type="button"
+                    className="menu-item"
+                    onClick={() => {
+                      clearMeshSelection();
+                      setOpenMenu(null);
+                    }}
+                    disabled={meshSelectionCount === 0}
+                  >
+                    Clear mesh selection
+                  </button>
+                  <button
+                    type="button"
+                    className="menu-item"
+                    onClick={() => {
+                      clearMeshLabel();
+                      setOpenMenu(null);
+                    }}
+                    disabled={!meshPickedLabel}
+                  >
+                    Clear mesh label
+                  </button>
+                  <button
+                    type="button"
+                    className="menu-item"
+                    onClick={() => {
+                      resetPartOffsets();
+                      setOpenMenu(null);
+                    }}
+                    disabled={!hasPartOffsets}
+                  >
+                    Reset part offsets
+                  </button>
+                </div>
+              )}
+            </div>
+            <div className="menu-group">
+              <button
+                type="button"
+                className={`menu-button ${openMenu === "view" ? "active" : ""}`}
+                onClick={() => toggleMenu("view")}
+                aria-expanded={openMenu === "view"}
+              >
+                View
+              </button>
+              {openMenu === "view" && (
+                <div className="menu-panel" role="menu">
+                  <span className="menu-section">Viewer</span>
+                  <button
+                    type="button"
+                    className={`menu-item ${
+                      viewerMode === "2d" ? "is-active" : ""
+                    }`}
+                    onClick={() => {
+                      setViewerMode("2d");
+                      setOpenMenu(null);
+                    }}
+                  >
+                    2D slices
+                  </button>
+                  <button
+                    type="button"
+                    className={`menu-item ${
+                      viewerMode === "3d" ? "is-active" : ""
+                    }`}
+                    onClick={() => {
+                      setViewerMode("3d");
+                      setOpenMenu(null);
+                    }}
+                  >
+                    3D viewer
+                  </button>
+                  {viewerMode === "3d" && (
+                    <>
+                      <button
+                        type="button"
+                        className={`menu-item ${
+                          viewer3dMode === "volume" ? "is-active" : ""
+                        }`}
+                        onClick={() => {
+                          setViewer3dMode("volume");
+                          setOpenMenu(null);
+                        }}
+                      >
+                        Volume mode
+                      </button>
+                      <button
+                        type="button"
+                        className={`menu-item ${
+                          viewer3dMode === "mesh" ? "is-active" : ""
+                        }`}
+                        onClick={() => {
+                          setViewer3dMode("mesh");
+                          setOpenMenu(null);
+                        }}
+                      >
+                        Mesh mode
+                      </button>
+                    </>
+                  )}
+                  <div className="menu-divider" />
+                  <span className="menu-section">Shelves</span>
+                  <button
+                    type="button"
+                    className={`menu-item ${
+                      showLeftShelf ? "is-active" : ""
+                    }`}
+                    onClick={() => {
+                      setShowLeftShelf((prev: boolean) => !prev);
+                      setOpenMenu(null);
+                    }}
+                  >
+                    {showLeftShelf ? "Hide left shelf" : "Show left shelf"}
+                  </button>
+                  <button
+                    type="button"
+                    className={`menu-item ${
+                      showRightShelf ? "is-active" : ""
+                    }`}
+                    onClick={() => {
+                      setShowRightShelf((prev: boolean) => !prev);
+                      setOpenMenu(null);
+                    }}
+                  >
+                    {showRightShelf ? "Hide right shelf" : "Show right shelf"}
+                  </button>
+                  <div className="menu-divider" />
+                  <button
+                    type="button"
+                    className={`menu-item ${
+                      meshWireframe ? "is-active" : ""
+                    }`}
+                    onClick={() => {
+                      setMeshWireframe(!meshWireframe);
+                      setOpenMenu(null);
+                    }}
+                  >
+                    Wireframe
+                  </button>
+                </div>
+              )}
+            </div>
+            <div className="menu-group">
+              <button
+                type="button"
+                className={`menu-button ${openMenu === "annotate" ? "active" : ""}`}
+                onClick={() => toggleMenu("annotate")}
+                aria-expanded={openMenu === "annotate"}
+              >
+                Annotate
+              </button>
+              {openMenu === "annotate" && (
+                <div className="menu-panel" role="menu">
+                  <span className="menu-section">2D tools</span>
+                  {WORKSPACE_TOOLS.map(
+                    (tool: { id: string; label: string }) => (
+                      <button
+                        key={tool.id}
+                        type="button"
+                        className={`menu-item ${
+                          workspaceTool === tool.id ? "is-active" : ""
+                        }`}
+                        onClick={() => {
+                          setWorkspaceTool(tool.id);
+                          setOpenMenu(null);
+                        }}
+                      >
+                        {tool.label}
+                      </button>
+                    )
+                  )}
+                  <div className="menu-divider" />
+                  <span className="menu-section">3D mesh tools</span>
+                  {(
+                    [
+                      { id: "orbit", label: "Orbit" },
+                      { id: "sculpt", label: "Sculpt" },
+                      { id: "carve", label: "Carve" },
+                      { id: "select", label: "Select" },
+                      { id: "label", label: "Label" },
+                    ] as Array<{ id: MeshTool; label: string }>
+                  ).map((tool) => (
+                    <button
+                      key={tool.id}
+                      type="button"
+                      className={`menu-item ${
+                        meshTool === tool.id ? "is-active" : ""
+                      }`}
+                      onClick={() => {
+                        setMeshTool(tool.id);
+                        setOpenMenu(null);
+                      }}
+                    >
+                      {tool.label}
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    className={`menu-item ${
+                      meshLabelEnabled ? "is-active" : ""
+                    }`}
+                    onClick={() => {
+                      setMeshLabelEnabled(!meshLabelEnabled);
+                      setOpenMenu(null);
+                    }}
+                  >
+                    Toggle mesh labels
+                  </button>
+                </div>
+              )}
+            </div>
+            <div className="menu-group">
+              <button
+                type="button"
+                className={`menu-button ${openMenu === "render" ? "active" : ""}`}
+                onClick={() => toggleMenu("render")}
+                aria-expanded={openMenu === "render"}
+              >
+                Render
+              </button>
+              {openMenu === "render" && (
+                <div className="menu-panel" role="menu">
+                  <button
+                    type="button"
+                    className="menu-item"
+                    onClick={() => {
+                      requestMeshRebuild();
+                      setOpenMenu(null);
+                    }}
+                  >
+                    Rebuild mesh
+                  </button>
+                  <div className="menu-divider" />
+                  <span className="menu-section">Layers</span>
+                  <button
+                    type="button"
+                    className={`menu-item ${
+                      meshVolumeEnabled ? "is-active" : ""
+                    }`}
+                    onClick={() => {
+                      setMeshVolumeEnabled(!meshVolumeEnabled);
+                      setOpenMenu(null);
+                    }}
+                  >
+                    Volume underlay
+                  </button>
+                  <button
+                    type="button"
+                    className={`menu-item ${
+                      meshOverlayEnabled ? "is-active" : ""
+                    }`}
+                    onClick={() => {
+                      setMeshOverlayEnabled(!meshOverlayEnabled);
+                      setOpenMenu(null);
+                    }}
+                  >
+                    Tumor overlay
+                  </button>
+                  <div className="menu-divider" />
+                  <span className="menu-section">Effects</span>
+                  <button
+                    type="button"
+                    className={`menu-item ${
+                      meshClipEnabled ? "is-active" : ""
+                    }`}
+                    onClick={() => {
+                      setMeshClipEnabled(!meshClipEnabled);
+                      setOpenMenu(null);
+                    }}
+                  >
+                    Clipping
+                  </button>
+                  <button
+                    type="button"
+                    className={`menu-item ${
+                      meshExplodeEnabled ? "is-active" : ""
+                    }`}
+                    onClick={() => {
+                      setMeshExplodeEnabled(!meshExplodeEnabled);
+                      setOpenMenu(null);
+                    }}
+                  >
+                    Explode view
+                  </button>
+                  <button
+                    type="button"
+                    className={`menu-item ${
+                      meshIsolateEnabled ? "is-active" : ""
+                    }`}
+                    onClick={() => {
+                      setMeshIsolateEnabled(!meshIsolateEnabled);
+                      setOpenMenu(null);
+                    }}
+                    disabled={meshPartCount <= 1}
+                  >
+                    Isolate part
+                  </button>
+                </div>
+              )}
+            </div>
+            <div className="menu-group">
+              <button
+                type="button"
+                className={`menu-button ${openMenu === "help" ? "active" : ""}`}
+                onClick={() => toggleMenu("help")}
+                aria-expanded={openMenu === "help"}
+              >
+                Help
+              </button>
+              {openMenu === "help" && (
+                <div className="menu-panel menu-panel-right" role="menu">
+                  <button
+                    type="button"
+                    className="menu-item"
+                    onClick={() => {
+                      window.location.assign("/docs");
+                      setOpenMenu(null);
+                    }}
+                  >
+                    Documentation
+                  </button>
+                  <button
+                    type="button"
+                    className="menu-item"
+                    onClick={() => {
+                      window.location.assign("/docs/frontend/workspace");
+                      setOpenMenu(null);
+                    }}
+                  >
+                    Workspace guide
+                  </button>
+                  <button
+                    type="button"
+                    className="menu-item"
+                    onClick={() => {
+                      window.alert(
+                        "Shortcuts: Ctrl+Shift drag to orbit, Shift+drag to pan, scroll to zoom. Use M/R + axis + drag to move/rotate meshes."
+                      );
+                      setOpenMenu(null);
+                    }}
+                  >
+                    Keyboard shortcuts
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
           <div className="workspace-top-actions">
             <div className="workspace-status">
@@ -337,6 +823,7 @@ const WorkspacePage = (props: WorkspacePageProps) => {
                 id="workspace-upload"
                 type="file"
                 multiple
+                ref={uploadInputRef}
                 onChange={handleFileChange}
               />
               <button
@@ -744,6 +1231,86 @@ const WorkspacePage = (props: WorkspacePageProps) => {
                         />
                         <span>Show label overlay</span>
                       </label>
+                      <label className="mesh-selection-toggle">
+                        <input
+                          type="checkbox"
+                          checked={meshAnatomyEnabled}
+                          onChange={(event) =>
+                            setMeshAnatomyEnabled(event.target.checked)
+                          }
+                        />
+                        <span>Atlas label assist (experimental)</span>
+                      </label>
+                      {meshAnatomyEnabled && (
+                        <div className="workspace-control">
+                          <label>
+                            Anatomy preset
+                            <select
+                              value={meshAnatomyPreset}
+                              onChange={(event) =>
+                                setMeshAnatomyPreset(
+                                  event.target.value as typeof meshAnatomyPreset
+                                )
+                              }
+                            >
+                              <option value="brain">Brain atlas</option>
+                              <option value="breast">Breast layers</option>
+                              <option value="abdomen">Abdominal organs</option>
+                              <option value="generic">Generic regions</option>
+                            </select>
+                          </label>
+                        </div>
+                      )}
+                      <button
+                        type="button"
+                        className={`btn btn-secondary btn-small ${
+                          meshSignalEnabled ? "is-active" : ""
+                        }`}
+                        onClick={() => setMeshSignalEnabled(!meshSignalEnabled)}
+                      >
+                        Blood vessel animation
+                      </button>
+                      {meshSignalEnabled && (
+                        <>
+                          <div className="workspace-control">
+                            <label>
+                              Animate file
+                              <select
+                                value={meshSignalTargetId}
+                                onChange={(event) => {
+                                  const targetPath = event.target.value;
+                                  setMeshSignalTargetId(targetPath);
+                                  if (targetPath && targetPath !== workspacePath) {
+                                    selectWorkspaceUpload(targetPath);
+                                  }
+                                }}
+                              >
+                                {workspaceUploads.map((item: any) => (
+                                  <option key={item.path} value={item.path}>
+                                    {item.label || item.path || "Workspace file"}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                          </div>
+                          <div className="workspace-control">
+                            <label>
+                              Animation speed
+                              <input
+                                type="range"
+                                min={0.4}
+                                max={2.5}
+                                step={0.1}
+                                value={meshSignalSpeed}
+                                onChange={(event) =>
+                                  setMeshSignalSpeed(Number(event.target.value))
+                                }
+                              />
+                            </label>
+                            <strong>{meshSignalSpeed.toFixed(1)}x</strong>
+                          </div>
+                        </>
+                      )}
                       {meshSelectionPrecision && meshVertexCount > 180000 && (
                         <div className="mesh-selection-note">
                           Precision pick can lag on dense meshes.
@@ -1605,101 +2172,6 @@ const WorkspacePage = (props: WorkspacePageProps) => {
                             {meshOpacity.toFixed(2)}
                           </span>
                         </label>
-                        <label className="viewer-control">
-                          <span>Vessel mesh</span>
-                          <div className="clip-toggle">
-                            <input
-                              type="checkbox"
-                              checked={meshVesselEnabled}
-                              onChange={(event) =>
-                                setMeshVesselEnabled(event.target.checked)
-                              }
-                              disabled={meshSource === "mask"}
-                            />
-                            <span className="viewer-control-value">
-                              {meshVesselEnabled ? "On" : "Off"}
-                            </span>
-                          </div>
-                          {meshSource === "mask" && (
-                            <span className="viewer-control-note">
-                              Vessel mesh uses scan intensity.
-                            </span>
-                          )}
-                        </label>
-                        {meshVesselEnabled && (
-                          <>
-                            <label className="viewer-control">
-                              <span>Vessel threshold</span>
-                              <input
-                                type="range"
-                                min={0.05}
-                                max={0.95}
-                                step={0.05}
-                                value={meshVesselThreshold}
-                                onChange={(event) =>
-                                  setMeshVesselThreshold(
-                                    Number(event.target.value)
-                                  )
-                                }
-                              />
-                              <span className="viewer-control-value">
-                                {meshVesselThreshold.toFixed(2)}
-                              </span>
-                            </label>
-                            <label className="viewer-control">
-                              <span>Vessel sigma min</span>
-                              <input
-                                type="range"
-                                min={0.5}
-                                max={4}
-                                step={0.5}
-                                value={meshVesselSigmaMin}
-                                onChange={(event) =>
-                                  setMeshVesselSigmaMin(
-                                    Number(event.target.value)
-                                  )
-                                }
-                              />
-                              <span className="viewer-control-value">
-                                {meshVesselSigmaMin.toFixed(1)}
-                              </span>
-                            </label>
-                            <label className="viewer-control">
-                              <span>Vessel sigma max</span>
-                              <input
-                                type="range"
-                                min={1}
-                                max={8}
-                                step={0.5}
-                                value={meshVesselSigmaMax}
-                                onChange={(event) =>
-                                  setMeshVesselSigmaMax(
-                                    Number(event.target.value)
-                                  )
-                                }
-                              />
-                              <span className="viewer-control-value">
-                                {meshVesselSigmaMax.toFixed(1)}
-                              </span>
-                            </label>
-                            <label className="viewer-control">
-                              <span>Vessel step</span>
-                              <input
-                                type="range"
-                                min={1}
-                                max={6}
-                                step={1}
-                                value={meshVesselStep}
-                                onChange={(event) =>
-                                  setMeshVesselStep(Number(event.target.value))
-                                }
-                              />
-                              <span className="viewer-control-value">
-                                {meshVesselStep}
-                              </span>
-                            </label>
-                          </>
-                        )}
                         <label className="viewer-control">
                           <span>Tumor overlay</span>
                           <div className="clip-toggle">

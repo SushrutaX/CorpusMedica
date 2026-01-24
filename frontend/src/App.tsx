@@ -177,6 +177,7 @@ type MeshMaterialPreset =
   | "muscle"
   | "glass";
 type MeshSource = "scan" | "mask";
+type MeshAnatomyPreset = "brain" | "breast" | "abdomen" | "generic";
 
 type MeshPart = {
   mesh: any;
@@ -274,6 +275,11 @@ type WorkspaceSettingsCache = {
   meshSelectionStrength?: number;
   meshSelectionPrecision?: boolean;
   meshLabelEnabled?: boolean;
+  meshAnatomyEnabled?: boolean;
+  meshAnatomyPreset?: MeshAnatomyPreset;
+  meshSignalEnabled?: boolean;
+  meshSignalSpeed?: number;
+  meshSignalTargetId?: string;
   overlayOpacity?: number;
   workspaceTool?: WorkspaceTool;
   brushSize?: number;
@@ -371,6 +377,18 @@ type MeshViewerState = {
   maxDim: number;
   activePartIndex: number;
   selection?: MeshSelection;
+  signalState?: {
+    material: any;
+    uniforms: {
+      uTime: { value: number };
+      uSpeed: { value: number };
+      uColor: { value: any };
+      uOpacity: { value: number };
+      uAxis: { value: any };
+    };
+    overlays: any[];
+    targetId: string;
+  };
 };
 type SliceColorMap = "grayscale" | "bone" | "hot" | "cool" | "viridis";
 type VolumeColorMap =
@@ -556,6 +574,51 @@ const MESH_MATERIAL_PRESETS: Record<
     thickness: 1.2,
     ior: 1.4,
   },
+};
+const MESH_ANATOMY_PRESETS: Record<MeshAnatomyPreset, string[]> = {
+  brain: [
+    "Frontal lobe",
+    "Parietal lobe",
+    "Temporal lobe",
+    "Occipital lobe",
+    "Cerebellum",
+    "Brainstem",
+    "Insula",
+    "Thalamus",
+    "Basal ganglia",
+    "Ventricles",
+    "Corpus callosum",
+    "Cingulate",
+  ],
+  breast: [
+    "Skin envelope",
+    "Fibroglandular tissue",
+    "Adipose layer",
+    "Ductal region",
+    "Chest wall",
+    "Pectoral muscle",
+    "Axillary tail",
+    "Vascular bundle",
+  ],
+  abdomen: [
+    "Liver",
+    "Spleen",
+    "Kidney",
+    "Pancreas",
+    "Stomach",
+    "Bowel",
+    "Aorta",
+    "IVC",
+    "Adipose",
+  ],
+  generic: [
+    "Region A",
+    "Region B",
+    "Region C",
+    "Region D",
+    "Region E",
+    "Region F",
+  ],
 };
 const enableViewerWorkspace =
   ((import.meta.env.VITE_ENABLE_VIEWER_WORKSPACE as string) ?? "true") ===
@@ -766,6 +829,15 @@ export default function App() {
     useState<boolean>(false);
   const [meshPickedLabel, setMeshPickedLabel] = useState<string>("");
   const [meshLabelEnabled, setMeshLabelEnabled] = useState<boolean>(true);
+  const [meshAnatomyEnabled, setMeshAnatomyEnabled] =
+    useState<boolean>(false);
+  const [meshAnatomyPreset, setMeshAnatomyPreset] =
+    useState<MeshAnatomyPreset>("brain");
+  const [meshSignalEnabled, setMeshSignalEnabled] =
+    useState<boolean>(false);
+  const [meshSignalSpeed, setMeshSignalSpeed] = useState<number>(1);
+  const [meshSignalTargetId, setMeshSignalTargetId] =
+    useState<string>("base");
   const [meshPartOffsets, setMeshPartOffsets] = useState<Record<number, number>>(
     {}
   );
@@ -871,6 +943,9 @@ export default function App() {
   const meshSelectionRadiusRef = useRef<number>(meshSelectionRadius);
   const meshSelectionStrengthRef = useRef<number>(meshSelectionStrength);
   const meshSelectionPrecisionRef = useRef<boolean>(meshSelectionPrecision);
+  const meshSignalEnabledRef = useRef<boolean>(meshSignalEnabled);
+  const meshSignalSpeedRef = useRef<number>(meshSignalSpeed);
+  const meshSignalTargetIdRef = useRef<string>(meshSignalTargetId);
   const meshOverlayOpacityRef = useRef<number>(meshOverlayOpacity);
   const activeMeshOverlayIdRef = useRef<string | null>(activeMeshOverlayId);
   const workspaceItemVisibleRef = useRef<boolean>(true);
@@ -1330,6 +1405,27 @@ export default function App() {
       if (typeof parsed.meshLabelEnabled === "boolean") {
         setMeshLabelEnabled(parsed.meshLabelEnabled);
       }
+      if (typeof parsed.meshAnatomyEnabled === "boolean") {
+        setMeshAnatomyEnabled(parsed.meshAnatomyEnabled);
+      }
+      if (
+        typeof parsed.meshAnatomyPreset === "string" &&
+        Object.prototype.hasOwnProperty.call(
+          MESH_ANATOMY_PRESETS,
+          parsed.meshAnatomyPreset
+        )
+      ) {
+        setMeshAnatomyPreset(parsed.meshAnatomyPreset as MeshAnatomyPreset);
+      }
+      if (typeof parsed.meshSignalEnabled === "boolean") {
+        setMeshSignalEnabled(parsed.meshSignalEnabled);
+      }
+      if (typeof parsed.meshSignalSpeed === "number") {
+        setMeshSignalSpeed(Math.max(0.4, Math.min(parsed.meshSignalSpeed, 3)));
+      }
+      if (typeof parsed.meshSignalTargetId === "string") {
+        setMeshSignalTargetId(parsed.meshSignalTargetId);
+      }
       if (typeof parsed.overlayOpacity === "number") {
         setOverlayOpacity(Math.max(0.05, Math.min(parsed.overlayOpacity, 1)));
       }
@@ -1536,6 +1632,11 @@ export default function App() {
       meshSelectionStrength,
       meshSelectionPrecision,
       meshLabelEnabled,
+      meshAnatomyEnabled,
+      meshAnatomyPreset,
+      meshSignalEnabled,
+      meshSignalSpeed,
+      meshSignalTargetId,
       overlayOpacity,
       workspaceTool,
       brushSize,
@@ -1582,6 +1683,11 @@ export default function App() {
     meshSelectionStrength,
     meshSelectionPrecision,
     meshLabelEnabled,
+    meshAnatomyEnabled,
+    meshAnatomyPreset,
+    meshSignalEnabled,
+    meshSignalSpeed,
+    meshSignalTargetId,
     overlayOpacity,
     workspaceTool,
     brushSize,
@@ -2197,14 +2303,6 @@ export default function App() {
       if (typeof options?.label === "number") {
         params.set("label", String(options.label));
       }
-      const disableVessel = options?.disableVessel ?? false;
-      if (!disableVessel && meshVesselEnabled && meshSource !== "mask") {
-        params.set("vessel", "true");
-        params.set("vessel_threshold", String(meshVesselThreshold));
-        params.set("vessel_sigma_min", String(meshVesselSigmaMin));
-        params.set("vessel_sigma_max", String(meshVesselSigmaMax));
-        params.set("vessel_step", String(meshVesselStep));
-      }
       if (authToken) {
         params.set("token", authToken);
       }
@@ -2217,12 +2315,6 @@ export default function App() {
       meshStep,
       meshRevision,
       authToken,
-      meshVesselEnabled,
-      meshVesselThreshold,
-      meshVesselSigmaMin,
-      meshVesselSigmaMax,
-      meshVesselStep,
-      meshSource,
     ]
   );
 
@@ -2896,6 +2988,17 @@ export default function App() {
     setMeshPickedLabel("");
   }, []);
 
+  const getAnatomyLabel = useCallback(
+    (partIndex: number) => {
+      if (!meshAnatomyEnabled) return "";
+      const preset = MESH_ANATOMY_PRESETS[meshAnatomyPreset] ??
+        MESH_ANATOMY_PRESETS.brain;
+      if (!preset.length) return "";
+      return preset[partIndex % preset.length];
+    },
+    [meshAnatomyEnabled, meshAnatomyPreset]
+  );
+
   const buildMeshPartLabel = useCallback((partIndex: number) => {
     const state = meshStateRef.current;
     if (!state) return `Part ${partIndex + 1}`;
@@ -2924,10 +3027,15 @@ export default function App() {
       regionParts.push(dz > 0 ? "Superior" : "Inferior");
     }
     const region = regionParts.length ? regionParts.join(" / ") : "Central";
+    const anatomyLabel = getAnatomyLabel(partIndex);
     const labelBase =
-      state.meshParts.length > 1 ? `Part ${partIndex + 1}` : "Mesh";
+      anatomyLabel.length > 0
+        ? anatomyLabel
+        : state.meshParts.length > 1
+          ? `Part ${partIndex + 1}`
+          : "Mesh";
     return `${labelBase} \u00b7 ${region}`;
-  }, []);
+  }, [getAnatomyLabel]);
 
   const clearMeshLabel = useCallback(() => {
     const state = meshStateRef.current;
@@ -2991,6 +3099,196 @@ export default function App() {
     state.labelSprite.position.copy(labelPos);
   }, []);
 
+  const disposeMeshSignals = useCallback((state: MeshViewerState) => {
+    if (!state.signalState) return;
+    const { overlays, material } = state.signalState;
+    overlays.forEach((overlay) => {
+      overlay.mesh.removeFromParent();
+    });
+    material.dispose();
+    state.signalState = undefined;
+  }, []);
+
+  const createMeshSignals = useCallback((state: MeshViewerState) => {
+    const { three: THREE, meshGroup, meshParts } = state;
+    const targetId = meshSignalTargetIdRef.current;
+    const overlayTarget =
+      targetId !== "base"
+        ? state.overlayStackMeshes?.get(targetId)?.mesh
+        : null;
+    const targetMeshes =
+      overlayTarget && overlayTarget.geometry
+        ? [overlayTarget]
+        : meshParts.map((part) => part.mesh);
+    if (!targetMeshes.length) return;
+
+    const worldBounds = new THREE.Box3().setFromObject(meshGroup);
+    const size = new THREE.Vector3();
+    worldBounds.getSize(size);
+    const axisIndex =
+      size.x >= size.y && size.x >= size.z ? 0 : size.y >= size.z ? 1 : 2;
+    const flowAxis = new THREE.Vector3(
+      axisIndex === 0 ? 1 : 0,
+      axisIndex === 1 ? 1 : 0,
+      axisIndex === 2 ? 1 : 0
+    );
+
+    const uniforms = {
+      uTime: { value: 0 },
+      uSpeed: { value: meshSignalSpeedRef.current },
+      uColor: { value: new THREE.Color(0xf43f5e) },
+      uGlowColor: { value: new THREE.Color(0xf43f5e) },
+      uOpacity: { value: 0.7 },
+      uGlowBoost: { value: 2.1 },
+      uAxis: { value: flowAxis.normalize() },
+    };
+    const material = new THREE.ShaderMaterial({
+      uniforms,
+      transparent: true,
+      blending: THREE.NormalBlending,
+      depthWrite: false,
+      depthTest: true,
+      side: THREE.DoubleSide,
+      vertexShader: `
+        uniform vec3 uAxis;
+        varying float vFlow;
+        varying vec3 vWorldPos;
+        varying vec3 vWorldNormal;
+        void main() {
+          vec3 transformed = position;
+          vFlow = dot(transformed, normalize(uAxis));
+          vec4 worldPos = modelMatrix * vec4(transformed, 1.0);
+          vWorldPos = worldPos.xyz;
+          vWorldNormal = normalize(mat3(modelMatrix) * normal);
+          gl_Position = projectionMatrix * viewMatrix * worldPos;
+        }
+      `,
+      fragmentShader: `
+        uniform float uTime;
+        uniform float uSpeed;
+        uniform vec3 uColor;
+        uniform vec3 uGlowColor;
+        uniform float uOpacity;
+        uniform float uGlowBoost;
+        varying float vFlow;
+        varying vec3 vWorldPos;
+        varying vec3 vWorldNormal;
+        void main() {
+          float flowWave = 0.5 + 0.5 * sin(vFlow * 3.2 - uTime * uSpeed * 1.6);
+          float surfaceWave = 0.5 + 0.5 * sin(
+            (vWorldPos.x * 0.7 + vWorldPos.y * 0.5 + vWorldPos.z * 0.6) +
+            uTime * uSpeed * 0.9
+          );
+          float ripple = 0.5 + 0.5 * sin(
+            (vWorldPos.x * 1.1 - vWorldPos.y * 0.8 + vWorldPos.z * 0.9) +
+            uTime * uSpeed * 1.4
+          );
+          float swirl = 0.5 + 0.5 * cos(
+            (vWorldPos.x * 0.4 + vWorldPos.y * 0.6 - vWorldPos.z * 0.5) -
+            uTime * uSpeed * 1.1
+          );
+          vec3 viewDir = normalize(cameraPosition - vWorldPos);
+          float fresnel = pow(1.0 - max(dot(normalize(vWorldNormal), viewDir), 0.0), 1.0);
+          float flowField = mix(flowWave, surfaceWave, 0.45);
+          flowField = mix(flowField, ripple, 0.35);
+          flowField = mix(flowField, swirl, 0.25);
+          float intensity = smoothstep(0.15, 0.95, flowField);
+          float spec = pow(max(dot(normalize(vWorldNormal), viewDir), 0.0), 6.0);
+          float rim = pow(fresnel, 1.5);
+          float glare = smoothstep(0.6, 1.0, spec) * (0.6 + 0.4 * flowWave);
+          float alpha = uOpacity * (0.3 + 0.45 * intensity + 0.45 * spec) * (0.3 + 0.85 * fresnel);
+          vec3 baseColor = mix(uColor * 0.75, uGlowColor, 0.35 + 0.45 * intensity);
+          vec3 finalColor = baseColor * (1.05 + rim * uGlowBoost) + uGlowColor * spec * 1.1 + uGlowColor * glare * 0.7;
+          gl_FragColor = vec4(finalColor, alpha);
+        }
+      `,
+    });
+
+    const overlays: Array<{ mesh: any }> = [];
+    targetMeshes.forEach((sourceMesh) => {
+      if (!sourceMesh?.geometry) return;
+      const overlay = new THREE.Mesh(sourceMesh.geometry, material);
+      overlay.frustumCulled = false;
+      overlay.renderOrder = 2;
+      overlay.userData.meshSignalOverlay = true;
+      sourceMesh.add(overlay);
+      overlays.push({ mesh: overlay });
+    });
+    overlays.forEach((overlay) => {
+      overlay.mesh.visible = meshSignalEnabledRef.current;
+    });
+    state.signalState = {
+      material,
+      uniforms,
+      overlays,
+      targetId,
+    };
+  }, []);
+
+  const updateMeshSignals = useCallback((delta: number, now: number) => {
+    const state = meshStateRef.current;
+    if (!state?.signalState) return;
+    if (!meshSignalEnabledRef.current) {
+      state.signalState.overlays.forEach((overlay) => {
+        overlay.mesh.visible = false;
+      });
+      return;
+    }
+    const { material, uniforms } = state.signalState;
+    state.signalState.overlays.forEach((overlay) => {
+      overlay.mesh.visible = true;
+    });
+    uniforms.uTime.value += delta;
+    uniforms.uSpeed.value = meshSignalSpeedRef.current;
+    uniforms.uOpacity.value = 0.45 + 0.15 * Math.sin(now * 1.1);
+    material.needsUpdate = false;
+  }, []);
+
+  useEffect(() => {
+    meshSignalSpeedRef.current = meshSignalSpeed;
+  }, [meshSignalSpeed]);
+
+  useEffect(() => {
+    meshSignalEnabledRef.current = meshSignalEnabled;
+    const state = meshStateRef.current;
+    if (!state) return;
+    if (meshSignalEnabled) {
+      if (!state.signalState) {
+        createMeshSignals(state);
+      } else {
+        state.signalState.overlays.forEach((overlay) => {
+          overlay.mesh.visible = true;
+        });
+      }
+    } else if (state.signalState) {
+      state.signalState.overlays.forEach((overlay) => {
+        overlay.mesh.visible = false;
+      });
+    }
+  }, [meshSignalEnabled, createMeshSignals]);
+
+  useEffect(() => {
+    meshSignalTargetIdRef.current = meshSignalTargetId;
+    if (!meshSignalEnabled) return;
+    const state = meshStateRef.current;
+    if (!state) return;
+    disposeMeshSignals(state);
+    createMeshSignals(state);
+  }, [meshSignalTargetId, meshSignalEnabled, createMeshSignals, disposeMeshSignals]);
+
+  useEffect(() => {
+    if (meshSignalTargetId === "base") return;
+    const overlayExists = meshOverlayItems.some(
+      (item) => item.id === meshSignalTargetId && item.renderMode === "mesh"
+    );
+    const workspaceExists = workspaceUploads.some(
+      (item) => item.path === meshSignalTargetId
+    );
+    if (!overlayExists && !workspaceExists) {
+      setMeshSignalTargetId("base");
+    }
+  }, [meshOverlayItems, meshSignalTargetId, workspaceUploads]);
+
   const createMeshLabel = useCallback(
     (partIndex: number) => {
       const state = meshStateRef.current;
@@ -3007,36 +3305,49 @@ export default function App() {
       if (!ctx) return;
       const paddingX = 32;
       const paddingY = 18;
-      const fontSize = 28;
+      const fontSize = 30;
+      const notch = 12;
       ctx.font = `600 ${fontSize}px "Space Grotesk", sans-serif`;
       const metrics = ctx.measureText(labelText);
       const textWidth = Math.ceil(metrics.width);
-      const width = textWidth + paddingX * 2;
+      const width = textWidth + paddingX * 2 + notch;
       const height = fontSize + paddingY * 2;
       const ratio = window.devicePixelRatio || 1;
       canvas.width = Math.ceil(width * ratio);
       canvas.height = Math.ceil(height * ratio);
       ctx.scale(ratio, ratio);
       ctx.font = `600 ${fontSize}px "Space Grotesk", sans-serif`;
-      ctx.fillStyle = "rgba(10, 18, 30, 0.75)";
-      ctx.strokeStyle = "rgba(56, 189, 248, 0.8)";
+      ctx.shadowColor = "rgba(8, 12, 20, 0.55)";
+      ctx.shadowBlur = 14;
+      ctx.shadowOffsetY = 6;
+      const gradient = ctx.createLinearGradient(0, 0, width, 0);
+      gradient.addColorStop(0, "rgba(10, 16, 28, 0.92)");
+      gradient.addColorStop(1, "rgba(18, 28, 44, 0.92)");
+      ctx.fillStyle = gradient;
+      ctx.strokeStyle = "rgba(52, 211, 153, 0.85)";
       ctx.lineWidth = 2;
       const radius = 14;
       ctx.beginPath();
-      ctx.moveTo(radius, 0);
+      ctx.moveTo(notch + radius, 0);
       ctx.lineTo(width - radius, 0);
       ctx.quadraticCurveTo(width, 0, width, radius);
       ctx.lineTo(width, height - radius);
       ctx.quadraticCurveTo(width, height, width - radius, height);
-      ctx.lineTo(radius, height);
-      ctx.quadraticCurveTo(0, height, 0, height - radius);
-      ctx.lineTo(0, radius);
-      ctx.quadraticCurveTo(0, 0, radius, 0);
+      ctx.lineTo(notch + radius, height);
+      ctx.quadraticCurveTo(notch, height, notch, height - radius);
+      ctx.lineTo(notch, height / 2 + 10);
+      ctx.lineTo(0, height / 2);
+      ctx.lineTo(notch, height / 2 - 10);
+      ctx.lineTo(notch, radius);
+      ctx.quadraticCurveTo(notch, 0, notch + radius, 0);
       ctx.closePath();
       ctx.fill();
       ctx.stroke();
-      ctx.fillStyle = "#e2f3ff";
-      ctx.fillText(labelText, paddingX, paddingY + fontSize * 0.8);
+      ctx.shadowColor = "transparent";
+      ctx.fillStyle = "rgba(52, 211, 153, 0.9)";
+      ctx.fillRect(notch + radius, 3, width - notch - radius * 2, 2);
+      ctx.fillStyle = "#f8fafc";
+      ctx.fillText(labelText, paddingX + notch, paddingY + fontSize * 0.8);
 
       const texture = new THREE.CanvasTexture(canvas);
       texture.needsUpdate = true;
@@ -3053,7 +3364,7 @@ export default function App() {
       sprite.center.set(0, 0.5);
 
       const lineMaterial = new THREE.LineBasicMaterial({
-        color: new THREE.Color(0x38bdf8),
+        color: new THREE.Color(0x34d399),
         transparent: true,
         opacity: 0.85,
         depthTest: false,
@@ -3193,6 +3504,12 @@ export default function App() {
       clearMeshLabel();
     }
   }, [meshLabelEnabled, clearMeshLabel]);
+
+  useEffect(() => {
+    const state = meshStateRef.current;
+    if (!meshLabelEnabled || state?.labelPartIndex == null) return;
+    createMeshLabel(state.labelPartIndex);
+  }, [meshAnatomyEnabled, meshAnatomyPreset, meshLabelEnabled, createMeshLabel]);
 
   const updateActivePartOffset = useCallback(
     (value: number) => {
@@ -4392,6 +4709,9 @@ export default function App() {
           maxDim,
           activePartIndex: 0,
         };
+        if (meshSignalEnabledRef.current) {
+          createMeshSignals(meshStateRef.current);
+        }
         setMeshOverlayRevision((value) => value + 1);
 
         clearMeshSelection();
@@ -5081,6 +5401,10 @@ export default function App() {
           ) {
             hasActivity = true;
           }
+          if (meshSignalEnabledRef.current) {
+            hasActivity = true;
+            updateMeshSignals(delta, now / 1000);
+          }
           const controlsChanged = controls.update();
           if (controlsChanged) {
             hasActivity = true;
@@ -5205,6 +5529,9 @@ export default function App() {
           }
           if (labelGroup) {
             labelGroup.removeFromParent();
+          }
+          if (meshStateRef.current?.signalState) {
+            disposeMeshSignals(meshStateRef.current);
           }
           renderer.dispose();
           if (meshVolumeCleanup) {
@@ -7903,6 +8230,16 @@ export default function App() {
       setMeshSelectionPrecision={setMeshSelectionPrecision}
       meshLabelEnabled={meshLabelEnabled}
       setMeshLabelEnabled={setMeshLabelEnabled}
+      meshAnatomyEnabled={meshAnatomyEnabled}
+      setMeshAnatomyEnabled={setMeshAnatomyEnabled}
+      meshAnatomyPreset={meshAnatomyPreset}
+      setMeshAnatomyPreset={setMeshAnatomyPreset}
+      meshSignalEnabled={meshSignalEnabled}
+      setMeshSignalEnabled={setMeshSignalEnabled}
+      meshSignalSpeed={meshSignalSpeed}
+      setMeshSignalSpeed={setMeshSignalSpeed}
+      meshSignalTargetId={meshSignalTargetId}
+      setMeshSignalTargetId={setMeshSignalTargetId}
       meshVertexCount={meshVertexCount}
       nudgeMeshSelection={nudgeMeshSelection}
       clearMeshSelection={clearMeshSelection}
