@@ -16,6 +16,7 @@ import {
 import anime from "animejs";
 import ChatPanel from "./components/ChatPanel";
 import DocsPage from "./pages/DocsPage";
+import DevPage from "./pages/devPage";
 import WorkspacePage from "./pages/WorkspacePage";
 
 type Model = {
@@ -8820,6 +8821,16 @@ export default function App() {
             >
               Docs
             </Link>
+            <Link
+              className={`topbar-link ${
+                location.pathname === "/developers" ? "active" : ""
+              }`}
+              to="/developers"
+              target="_blank"
+              rel="noreferrer"
+            >
+              Developers
+            </Link>
           </nav>
           {authUser && (
             <div className="topbar-actions">
@@ -9638,6 +9649,7 @@ export default function App() {
         />
         <Route path="/reports" element={reportPage} />
         <Route path="/docs/*" element={docsPage} />
+        <Route path="/developers" element={<DevPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
       </div>

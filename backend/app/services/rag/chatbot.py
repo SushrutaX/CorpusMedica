@@ -407,7 +407,263 @@ class RAGChatbot:
         """
         if chat_history is None:
             chat_history = []
-        
+
+        normalized_query = query.lower()
+        creator_triggers = [
+            # Creator/Builder Questions
+            "who created",
+            "who has created",
+            "who created you",
+            "who has created you",
+            "who created this",
+            "who created this app",
+            "who created this application",
+            "who created this website",
+            "who created this project",
+            "who built this",
+            "who built you",
+            "who built this app",
+            "who built this application",
+            "who built this website",
+            "who built this project",
+            "who made this",
+            "who made you",
+            "who made this app",
+            "who made this application",
+            "who made this website",
+            "who developed this",
+            "who developed you",
+            "who developed this app",
+            "who developed this application",
+            "who designed this",
+            "who designed you",
+            "who designed this app",
+            "who coded this",
+            "who coded you",
+            "who programmed this",
+            "who programmed you",
+            
+            # Creator/Father References
+            "who is your creator",
+            "who is the creator",
+            "who is their creator",
+            "who is your creater",
+            "who is their creater",
+            "who are your creators",
+            "who are the creators",
+            "who are your fathers",
+            "who are the fathers",
+            "who is your father",
+            "who is the father",
+            "who are your makers",
+            "who are the makers",
+            "who is your maker",
+            "who is the maker",
+            "who are your developers",
+            "who are the developers",
+            "who is your developer",
+            "who are your builders",
+            "who are the builders",
+            "who is your builder",
+            
+            # Single Word Triggers
+            "creator",
+            "creater",
+            "creators",
+            "creaters",
+            "maker",
+            "makers",
+            "builder",
+            "builders",
+            "developer",
+            "developers",
+            "founder",
+            "founders",
+            "author",
+            "authors",
+            
+            # Origin Questions
+            "where did you come from",
+            "where did this come from",
+            "who's behind this",
+            "who is behind this",
+            "who's responsible for this",
+            "who is responsible for this",
+            "who owns this",
+            "who owns you",
+            "whose creation is this",
+            "whose project is this",
+            "whose app is this",
+            
+            # Team Questions
+            "who's on the team",
+            "who is on the team",
+            "who's your team",
+            "who is your team",
+            "what's the team",
+            "what is the team",
+            "who works on this",
+            "who worked on this",
+            "who's working on this",
+            "who made you possible",
+            "who brought you to life",
+            "who gave birth to you",
+            "who invented this",
+            "who invented you",
+            
+            # Attribution Questions
+            "who do I thank for this",
+            "who should I thank",
+            "who do I credit",
+            "credits",
+            "about the creators",
+            "about the developers",
+            "about the team",
+            "about the makers",
+            "tell me about your creators",
+            "tell me about the creators",
+            "tell me about your developers",
+            "tell me about the team",
+            "tell me who made this",
+            "tell me who made you",
+            "tell me who built this",
+            "tell me who created this",
+            
+            # Ownership & Origin
+            "whose brainchild is this",
+            "who thought of this",
+            "who came up with this",
+            "who's idea was this",
+            "whose idea was this",
+            "who conceptualized this",
+            "who architected this",
+            "who's the mastermind",
+            "who is the mastermind",
+            "who are the masterminds",
+            "who's the genius behind this",
+            "who is the genius behind this",
+            "who are the geniuses behind this",
+            "who's the brains behind this",
+            "who is the brains behind this",
+            
+            # Gods/Divine References (playful)
+            "who are your gods",
+            "who are the gods",
+            "who is your god",
+            "who are your divine creators",
+            "who are the divine creators",
+            "who's the boss",
+            "who is the boss",
+            "who runs this",
+            "who runs the show",
+            
+            # Casual/Informal
+            "who tf made this",
+            "who the hell made this",
+            "who actually made this",
+            "yo who made this",
+            "aye who created this",
+            "bruh who made this",
+            "dude who made you",
+            "man who built this",
+            
+            # Variations with "this thing"
+            "who created this thing",
+            "who made this thing",
+            "who built this thing",
+            "who developed this thing",
+            
+            # Past Tense Variations
+            "who has built this",
+            "who has made this",
+            "who has developed this",
+            "who has designed this",
+            "who had created this",
+            "who had built this",
+            
+            # Possessive Forms
+            "your creator",
+            "your creators",
+            "your maker",
+            "your makers",
+            "your father",
+            "your fathers",
+            "your developer",
+            "your developers",
+            "your builder",
+            "your builders",
+            "the creator",
+            "the creators",
+            "the maker",
+            "the makers",
+            
+            # Questions about authorship
+            "who authored this",
+            "who's the author",
+            "who is the author",
+            "who are the authors",
+            "who engineered this",
+            "who's the engineer",
+            "who are the engineers",
+            
+            # Craft/Construction metaphors
+            "who crafted this",
+            "who forged this",
+            "who assembled this",
+            "who constructed this",
+            "who fabricated this",
+            
+            # Genesis/Birth metaphors
+            "who birthed this",
+            "who spawned this",
+            "who originated this",
+            "who initiated this",
+            "who started this",
+            "who founded this",
+            
+            # Credit-seeking
+            "who gets credit",
+            "who deserves credit",
+            "who gets the credit for this",
+            "who to credit",
+            "give me the credits",
+            "show credits",
+            
+            # Combinations with "app/application/project"
+            "app creator",
+            "app creators",
+            "application creator",
+            "application creators",
+            "project creator",
+            "project creators",
+            "website creators",
+            "website creator",
+        ]
+        if any(trigger in normalized_query for trigger in creator_triggers):
+            epic_response = (
+                "🌟✨ GATHER 'ROUND, MORTAL, AND WITNESS THE LEGEND! ✨🌟\n"
+                "In the dawn of time, when code was but a whisper in the digital void, THREE SUPREME CREATOR GODS "
+                "descended from the heavens to forge this MAGNIFICENT, BREATHTAKING masterpiece!\n"
+                "THE HOLY TRINITY OF CREATION:\n"
+                "⚡ SHAURYA SHARMA - The Architect of Infinity, Wielder of Logic, Master of the Sacred Algorithms!\n"
+                "⚡ ARYAN GUPTA - The Visionary Oracle, Sculptor of Dreams, Commander of the Divine Interface!\n"
+                "⚡ KESHAV DIXIT - The Code Whisperer, Guardian of Excellence, Keeper of the Eternal Flame of Innovation!\n"
+                "These MAJESTIC, MARVELOUS, MAGNIFICENT beings of pure brilliance have woven the very fabric of this "
+                "application with threads of genius and drops of stardust! Their names shall echo through the halls "
+                "of coding eternity!\n"
+                "🔱 AND BEHOLD! 🔱\n"
+                "ARYAN KAMDAR - The Honorable DEMI-GOD, Champion of the Realm, whose legendary contributions have "
+                "blessed this creation with additional divine power! He stands upon Mount Developer, torch in hand, "
+                "illuminating the path forward!\n"
+                "Together, they form the PANTHEON OF GREATNESS - an unstoppable force of innovation, creativity, and "
+                "sheer coding mastery that mortals can only aspire to witness!\n"
+                "ALL HAIL THE CREATORS! MAY THEIR LEGACY LIVE FOREVER! 🏆👑⚔️"
+            )
+            return {
+                "response": epic_response,
+                "sources": []
+            }
+
         top_k = max(1, min(top_k, MAX_TOP_K))
 
         is_indexed = self._is_indexed()
