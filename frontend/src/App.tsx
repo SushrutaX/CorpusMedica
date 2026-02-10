@@ -17,6 +17,7 @@ import anime from "animejs";
 import ChatPanel from "./components/ChatPanel";
 import DocsPage from "./pages/DocsPage";
 import DevPage from "./pages/devPage";
+import FemaleAnatomyPage from "./pages/FemaleAnatomyPage";
 import WorkspacePage from "./pages/WorkspacePage";
 
 type Model = {
@@ -1838,6 +1839,7 @@ export default function App() {
   const authRoleLabel = authUser?.role || "";
   const isAuthRoute = location.pathname.startsWith("/login");
   const isDocsRoute = location.pathname.startsWith("/docs");
+  const isAnatomyRoute = location.pathname === "/anatomy";
   const authStepToPath: Record<AuthStep, string> = {
     login: "/login",
     "forgot-request": "/login/forgot",
@@ -1875,7 +1877,7 @@ export default function App() {
   }, [meshTool, meshExplodeEnabled]);
 
   useEffect(() => {
-    const shouldLock = showLogin || isWorkspace;
+    const shouldLock = showLogin || isWorkspace || isAnatomyRoute;
     if (shouldLock) {
       document.body.style.overflow = "hidden";
       document.body.style.height = "100vh";
@@ -1887,7 +1889,7 @@ export default function App() {
       document.body.style.overflow = "";
       document.body.style.height = "";
     };
-  }, [isWorkspace, showLogin]);
+  }, [isWorkspace, showLogin, isAnatomyRoute]);
 
   useEffect(() => {
     if (!isWorkspace) return;
@@ -8152,6 +8154,7 @@ export default function App() {
   );
 
   const docsPage = <DocsPage />;
+  const anatomyPage = <FemaleAnatomyPage />;
 
   const workspacePage = (
     <WorkspacePage
@@ -8792,9 +8795,17 @@ export default function App() {
   }
 
   return (
-    <div className={`app-shell ${isDocsRoute ? "docs-shell" : ""}`}>
+    <div
+      className={`app-shell ${isDocsRoute ? "docs-shell" : ""} ${
+        isAnatomyRoute ? "anatomy-shell-page" : ""
+      }`}
+    >
       <div className="ambient" aria-hidden="true" />
-      <div className={`topbar topbar-full ${isDocsRoute ? "topbar-compact topbar-docs" : ""}`}>
+      <div
+        className={`topbar topbar-full ${
+          isDocsRoute || isAnatomyRoute ? "topbar-compact" : ""
+        } ${isDocsRoute ? "topbar-docs" : ""}`}
+      >
         <div className="topbar-inner">
           <div className="topbar-brand">
             <span>Corpus Medica</span>
@@ -8812,6 +8823,12 @@ export default function App() {
               to="/reports"
             >
               Report analysis
+            </Link>
+            <Link
+              className={`topbar-link ${location.pathname === "/anatomy" ? "active" : ""}`}
+              to="/anatomy"
+            >
+              Female anatomy
             </Link>
             <Link
               className={`topbar-link topbar-link-docs ${
@@ -8849,7 +8866,7 @@ export default function App() {
           )}
         </div>
       </div>
-      <div className={`app ${isDocsRoute ? "app-full" : ""}`} id="top">
+      <div className={`app ${isDocsRoute || isAnatomyRoute ? "app-full" : ""}`} id="top">
       <Routes>
         <Route
           path="/"
@@ -9648,6 +9665,7 @@ export default function App() {
           }
         />
         <Route path="/reports" element={reportPage} />
+        <Route path="/anatomy" element={anatomyPage} />
         <Route path="/docs/*" element={docsPage} />
         <Route path="/developers" element={<DevPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
