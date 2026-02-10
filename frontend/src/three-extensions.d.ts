@@ -7,3 +7,14 @@ declare module "three/examples/jsm/loaders/PLYLoader" {
     parse: (data: ArrayBuffer) => any;
   };
 }
+
+declare module "three/examples/jsm/loaders/GLTFLoader" {
+  export class GLTFLoader {
+    load: (
+      url: string,
+      onLoad: (gltf: any) => void,
+      onProgress?: (event: ProgressEvent<EventTarget>) => void,
+      onError?: (event: unknown) => void
+    ) => void;
+  }
+}
