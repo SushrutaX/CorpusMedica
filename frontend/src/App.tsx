@@ -9,6 +9,8 @@ import anime from "animejs";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import ChatPanel from './components/ChatPanel';
+import DevPage from "./pages/devPage";
+import ReportAnalysis from "./pages/ReportAnalysis";
 
 type Model = {
   id: string;
@@ -59,18 +61,6 @@ type ResultsResponse = {
     report_path: string;
   };
   error_message?: string | null;
-};
-
-type ReportAnalysisResponse = {
-  extracted_values: Record<string, number | string>;
-  risk_analysis: {
-    risk_level: string;
-    abnormalities: Record<string, string>;
-    explanations: string[];
-    possible_symptoms: string[];
-    disclaimer?: string;
-  };
-  llm_explanation: string;
 };
 
 type AuthTokens = {
@@ -626,15 +616,6 @@ export default function App() {
   const [jobId, setJobId] = useState<string>("");
   const [jobStatus, setJobStatus] = useState<JobStatus | null>(null);
   const [jobResult, setJobResult] = useState<ResultsResponse | null>(null);
-  const [reportFile, setReportFile] = useState<File | null>(null);
-  const [reportResult, setReportResult] =
-    useState<ReportAnalysisResponse | null>(null);
-  const [reportLoading, setReportLoading] = useState<boolean>(false);
-  const [reportError, setReportError] = useState<string>("");
-  const [reportNotice, setReportNotice] = useState<string>("");
-  const [reportValueQuery, setReportValueQuery] = useState<string>("");
-  const [reportOnlyAbnormal, setReportOnlyAbnormal] =
-    useState<boolean>(false);
   const [error, setError] = useState<string>("");
   const [jobHistory, setJobHistory] = useState<JobHistoryItem[]>([]);
   const [historyLoading, setHistoryLoading] = useState<boolean>(false);
@@ -852,41 +833,6 @@ export default function App() {
     [models]
   );
   const recentJobs = useMemo(() => jobHistory.slice(0, 6), [jobHistory]);
-  const reportValues = useMemo(
-    () => Object.entries(reportResult?.extracted_values ?? {}),
-    [reportResult]
-  );
-  const reportAbnormalities = useMemo(
-    () => Object.entries(reportResult?.risk_analysis?.abnormalities ?? {}),
-    [reportResult]
-  );
-  const reportAbnormalityMap = useMemo(
-    () => new Map(reportAbnormalities),
-    [reportAbnormalities]
-  );
-  const reportFilteredValues = useMemo(() => {
-    const query = reportValueQuery.trim().toLowerCase();
-    return reportValues.filter(([key]) => {
-      if (reportOnlyAbnormal && !reportAbnormalityMap.has(key)) {
-        return false;
-      }
-      if (!query) {
-        return true;
-      }
-      return key.toLowerCase().includes(query);
-    });
-  }, [reportValues, reportValueQuery, reportOnlyAbnormal, reportAbnormalityMap]);
-  const reportStats = useMemo(() => {
-    const valueCount = reportValues.length;
-    const abnormalCount = reportAbnormalities.length;
-    const symptomCount =
-      reportResult?.risk_analysis?.possible_symptoms?.length ?? 0;
-    return { valueCount, abnormalCount, symptomCount };
-  }, [reportValues, reportAbnormalities, reportResult]);
-  const reportRiskLevel = reportResult?.risk_analysis?.risk_level ?? "";
-  const reportRiskClass = reportRiskLevel
-    ? `report-risk-${reportRiskLevel}`
-    : "";
   const uploadPath = workspacePath || uploadResult?.saved_path || "";
   const isAuthenticated = Boolean(authToken && authUser);
   const authDisplayName = authUser?.email || authUser?.username || "User";
@@ -1239,8 +1185,8 @@ export default function App() {
     );
     if (!candidates.length) return "";
     if (uploadPath) {
-      const match = candidates.find((item) => item.input_path === uploadPath);
-      if (match) return match.outputs.mask_path;
+    const match = candidates.find((item) => item.input_path === uploadPath);
+    if (match) return match.outputs.mask_path;
     }
     return candidates[0]?.outputs?.mask_path ?? "";
   }, [jobHistory, uploadPath]);
@@ -1791,10 +1737,10 @@ export default function App() {
       try {
         const THREE = await import("three");
         const controlsModule = await import(
-          "three/examples/jsm/controls/OrbitControls"
+          "three/addons/controls/OrbitControls.js"
         );
         const loaderModule = await import(
-          "three/examples/jsm/loaders/PLYLoader"
+          "three/addons/loaders/PLYLoader.js"
         );
 
         if (cancelled) return;
@@ -2501,7 +2447,7 @@ export default function App() {
           controls.update();
         };
 
-        const onPointerUp = (event: PointerEvent) => {
+        const onPointerUp = (_event: PointerEvent) => {
           meshSculptingRef.current = false;
           meshPendingRef.current = null;
           if (orbitOverrideActive) {
@@ -2611,10 +2557,10 @@ export default function App() {
           renderer.domElement.removeEventListener("pointerenter", onPointerEnter);
           renderer.domElement.removeEventListener("pointerleave", onPointerLeave);
           renderer.domElement.removeEventListener("wheel", onWheel);
-          renderer.domElement.removeEventListener("contextmenu", onContextMenu);
-          window.removeEventListener("keydown", onKeyToggle);
-          window.removeEventListener("keyup", onKeyToggle);
-          window.removeEventListener("pointerup", onPointerUp);
+        renderer.domElement.removeEventListener("contextmenu", onContextMenu);
+        window.removeEventListener("keydown", onKeyToggle);
+        window.removeEventListener("keyup", onKeyToggle);
+        window.removeEventListener("pointerup", onPointerUp);
           clearMeshSelection();
           controls.dispose();
           grid.removeFromParent();
@@ -3060,15 +3006,15 @@ export default function App() {
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
     const selected = Array.from(event.target.files ?? []);
     setFiles(selected);
-    setUploadResult(null);
-    setUploadPreview(null);
-    setVolumeInfo(null);
+      setUploadResult(null);
+      setUploadPreview(null);
+      setVolumeInfo(null);
     setViewerError("");
-    setJobId("");
-    setJobStatus(null);
-    setJobResult(null);
-    if (workspacePath) {
-      setWorkspacePath("");
+      setJobId("");
+      setJobStatus(null);
+      setJobResult(null);
+      if (workspacePath) {
+        setWorkspacePath("");
     }
     if (selected.length > 0) {
       const name =
@@ -3410,25 +3356,25 @@ export default function App() {
       setError("");
       setUploading(true);
 
-      const form = new FormData();
-      if (files.length === 1) {
-        form.append("file", files[0]);
-      } else {
-        files.forEach((item) => form.append("files", item));
-      }
+        const form = new FormData();
+        if (files.length === 1) {
+          form.append("file", files[0]);
+        } else {
+          files.forEach((item) => form.append("files", item));
+        }
 
       const endpoint = files.length === 1 ? "/api/uploads" : "/api/uploads/batch";
-      const res = await apiFetch(`${API_BASE}${endpoint}`, {
-        method: "POST",
-        body: form,
-      });
+        const res = await apiFetch(`${API_BASE}${endpoint}`, {
+          method: "POST",
+          body: form,
+        });
 
-      if (!res.ok) throw new Error(`Upload failed (${res.status})`);
+        if (!res.ok) throw new Error(`Upload failed (${res.status})`);
 
-      const data = (await res.json()) as UploadResponse;
-      setUploadResult(data);
-      setUploadPreview(null);
-      pushNotice("success", "Upload complete", "Scan saved successfully.");
+        const data = (await res.json()) as UploadResponse;
+          setUploadResult(data);
+        setUploadPreview(null);
+        pushNotice("success", "Upload complete", "Scan saved successfully.");
 
       const savedPath = "saved_path" in data ? data.saved_path : "";
       if (savedPath) {
@@ -3500,60 +3446,6 @@ export default function App() {
       pushNotice("error", "Segmentation failed", message);
     }
   };
-
-  const handleReportFileChange = useCallback(
-    (event: ChangeEvent<HTMLInputElement>) => {
-      const file = event.target.files?.[0] ?? null;
-      setReportFile(file);
-      setReportResult(null);
-      setReportError("");
-      setReportNotice("");
-      setReportValueQuery("");
-      setReportOnlyAbnormal(false);
-    },
-    []
-  );
-
-  const handleAnalyzeReport = useCallback(async () => {
-    if (!reportFile) {
-      setReportError("Select a report file to analyze.");
-      return;
-    }
-    try {
-      setReportError("");
-      setReportNotice("");
-      setReportLoading(true);
-      const form = new FormData();
-      form.append("file", reportFile);
-      const res = await apiFetch(`${API_BASE}/api/reports/analyze`, {
-        method: "POST",
-        body: form,
-      });
-      const payload = (await res.json().catch(() => null)) as
-        | ReportAnalysisResponse
-        | { detail?: string }
-        | null;
-      if (!res.ok) {
-        throw new Error(
-          payload && "detail" in payload && payload.detail
-            ? payload.detail
-            : `Report analysis failed (${res.status})`
-        );
-      }
-      if (payload && "extracted_values" in payload) {
-        setReportResult(payload as ReportAnalysisResponse);
-        setReportNotice("Report analysis complete.");
-      } else {
-        throw new Error("Unexpected response from report analysis.");
-      }
-    } catch (e: unknown) {
-      const message =
-        e instanceof Error ? e.message : "Report analysis failed.";
-      setReportError(message);
-    } finally {
-      setReportLoading(false);
-    }
-  }, [apiFetch, reportFile]);
 
   const labelMap = useMemo(() => {
     const map = new Map<string, Label>();
@@ -4356,328 +4248,6 @@ export default function App() {
     </div>
   );
 
-  const reportPanel = (
-    <section className="panel report-panel" id="report-analysis">
-      <div className="panel-head">
-        <div>
-          <h2>Report analysis</h2>
-          <p>Upload lab reports to extract values and generate insights.</p>
-        </div>
-        <span
-          className={`status-badge ${
-            reportResult ? "status-done" : reportLoading ? "status-running" : ""
-          }`}
-        >
-          {reportLoading ? "Analyzing" : reportResult ? "Complete" : "Awaiting report"}
-        </span>
-      </div>
-
-      {reportError && (
-        <div className="banner banner-error" role="alert">
-          {reportError}
-        </div>
-      )}
-      {reportNotice && (
-        <div className="banner banner-info" role="status">
-          {reportNotice}
-        </div>
-      )}
-
-      <div className="report-flow">
-        <div className={`report-step ${reportFile ? "is-done" : ""}`}>
-          <div className="report-step-title">Upload</div>
-          <div className="report-step-subtitle">
-            {reportFile ? "File ready" : "Choose file"}
-          </div>
-        </div>
-        <div
-          className={`report-step ${
-            reportLoading ? "is-active" : reportResult ? "is-done" : ""
-          }`}
-        >
-          <div className="report-step-title">Extract</div>
-          <div className="report-step-subtitle">
-            {reportLoading ? "Parsing" : reportResult ? "Complete" : "Waiting"}
-          </div>
-        </div>
-        <div className={`report-step ${reportResult ? "is-done" : ""}`}>
-          <div className="report-step-title">Assess</div>
-          <div className="report-step-subtitle">
-            {reportResult ? "Risk mapped" : "Pending"}
-          </div>
-        </div>
-        <div className={`report-step ${reportResult ? "is-done" : ""}`}>
-          <div className="report-step-title">Explain</div>
-          <div className="report-step-subtitle">
-            {reportResult ? "Narrative ready" : "Pending"}
-          </div>
-        </div>
-      </div>
-
-      {reportResult && (
-        <div className="report-summary">
-          <div className={`report-summary-card ${reportRiskClass}`}>
-            <span>Risk level</span>
-            <strong>{reportRiskLevel}</strong>
-          </div>
-          <div className="report-summary-card">
-            <span>Values extracted</span>
-            <strong>{reportStats.valueCount}</strong>
-          </div>
-          <div className="report-summary-card">
-            <span>Abnormalities</span>
-            <strong>{reportStats.abnormalCount}</strong>
-          </div>
-          <div className="report-summary-card">
-            <span>Possible symptoms</span>
-            <strong>{reportStats.symptomCount}</strong>
-          </div>
-        </div>
-      )}
-
-      <div className="report-grid">
-        <div className="report-column">
-          <div className="report-card report-card-upload">
-            <h3>Upload report</h3>
-            <p className="muted">Accepts PDF, JPG, PNG, or TXT lab reports.</p>
-            <div className="report-upload">
-              <input
-                type="file"
-                accept=".pdf,.png,.jpg,.jpeg,.txt"
-                onChange={handleReportFileChange}
-              />
-              <button
-                type="button"
-                className="btn btn-accent"
-                onClick={handleAnalyzeReport}
-                disabled={!reportFile || reportLoading}
-              >
-                {reportLoading ? "Analyzing..." : "Analyze report"}
-              </button>
-            </div>
-            {reportFile && (
-              <div className="report-file">
-                Selected: <span className="mono">{reportFile.name}</span>
-              </div>
-            )}
-          </div>
-
-          <div className="report-card report-card-values">
-            <div className="report-card-head">
-              <div>
-                <h3>Extracted values</h3>
-                {reportResult && (
-                  <p className="muted report-card-subtitle">
-                    Showing {reportFilteredValues.length} of {reportValues.length} values
-                  </p>
-                )}
-              </div>
-              <div className="report-card-tools">
-                <input
-                  type="search"
-                  className="report-search"
-                  placeholder="Search markers"
-                  value={reportValueQuery}
-                  onChange={(event) => setReportValueQuery(event.target.value)}
-                  disabled={!reportResult || reportLoading}
-                />
-                <button
-                  type="button"
-                  className={`btn btn-ghost btn-small report-filter-btn ${
-                    reportOnlyAbnormal ? "is-active" : ""
-                  }`}
-                  onClick={() => setReportOnlyAbnormal((prev) => !prev)}
-                  aria-pressed={reportOnlyAbnormal}
-                  disabled={!reportResult || reportLoading}
-                >
-                  Abnormal only
-                </button>
-              </div>
-            </div>
-            {reportLoading && (
-              <div className="skeleton-block">
-                <div className="skeleton-line wide" />
-                <div className="skeleton-line" />
-                <div className="skeleton-line short" />
-              </div>
-            )}
-            {!reportLoading && reportResult && reportValues.length > 0 && (
-              <div className="report-table">
-                <div className="report-table-head">
-                  <span>Marker</span>
-                  <span>Value</span>
-                  <span>Status</span>
-                </div>
-                {reportFilteredValues.map(([key, value]) => {
-                  const abnormal = reportAbnormalityMap.has(key);
-                  const note = reportAbnormalityMap.get(key);
-                  return (
-                    <div
-                      key={key}
-                      className={`report-table-row ${abnormal ? "is-abnormal" : ""}`}
-                    >
-                      <div className="report-table-key">{key}</div>
-                      <div className="report-table-value">{String(value)}</div>
-                      <div className="report-table-flag">
-                        {abnormal ? (
-                          <span className="report-flag report-flag-abnormal">
-                            {note || "Abnormal"}
-                          </span>
-                        ) : (
-                          <span className="report-flag report-flag-normal">Normal</span>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-            {!reportLoading &&
-              reportResult &&
-              reportValues.length > 0 &&
-              reportFilteredValues.length === 0 && (
-                <p className="muted">No values match the current filter.</p>
-              )}
-            {!reportLoading && reportResult && reportValues.length === 0 && (
-              <p className="muted">No structured values detected.</p>
-            )}
-            {!reportLoading && !reportResult && (
-              <p className="muted">Upload a report to see extracted values.</p>
-            )}
-          </div>
-        </div>
-
-        <div className="report-column">
-          <div className="report-card report-card-risk">
-            <h3>Risk summary</h3>
-            {reportResult ? (
-              <>
-                <div className="report-highlights">
-                  <span className={`report-pill ${reportRiskClass}`}>
-                    Risk: {reportResult.risk_analysis.risk_level}
-                  </span>
-                  <span
-                    className={`report-pill ${
-                      reportStats.abnormalCount ? "report-pill-alert" : "report-pill-soft"
-                    }`}
-                  >
-                    {reportStats.abnormalCount} abnormalities
-                  </span>
-                  <span className="report-pill report-pill-soft">
-                    {reportStats.symptomCount} symptoms
-                  </span>
-                </div>
-                {reportAbnormalities.length > 0 ? (
-                  <div className="report-group">
-                    <strong>Abnormalities</strong>
-                    <div className="report-pill-grid">
-                      {reportAbnormalities.map(([key, value]) => (
-                        <span key={key} className="report-pill report-pill-alert">
-                          {key}: {value}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                ) : (
-                  <p className="muted">No abnormalities detected.</p>
-                )}
-                {reportResult.risk_analysis.explanations.length > 0 && (
-                  <div className="report-group">
-                    <strong>Notes</strong>
-                    <div className="report-callout-stack">
-                      {reportResult.risk_analysis.explanations.map((item) => (
-                        <p key={item} className="report-callout">
-                          {item}
-                        </p>
-                      ))}
-                    </div>
-                  </div>
-                )}
-                {reportResult.risk_analysis.possible_symptoms.length > 0 && (
-                  <div className="report-group">
-                    <strong>Possible symptoms</strong>
-                    <div className="report-pill-grid">
-                      {reportResult.risk_analysis.possible_symptoms.map((item) => (
-                        <span key={item} className="report-pill report-pill-soft">
-                          {item}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                )}
-                {reportResult.risk_analysis.disclaimer && (
-                  <p className="report-callout report-callout-muted">
-                    {reportResult.risk_analysis.disclaimer}
-                  </p>
-                )}
-              </>
-            ) : (
-              <p className="muted">Upload a report to see risk assessment details.</p>
-            )}
-          </div>
-
-          <div className="report-card report-card-wide">
-            <h3>Groq explanation</h3>
-            {reportLoading && (
-              <div className="skeleton-block">
-                <div className="skeleton-line wide" />
-                <div className="skeleton-line" />
-                <div className="skeleton-line short" />
-              </div>
-            )}
-            {!reportLoading && reportResult && (
-              <div className="report-explanation-block">
-                <p className="report-explanation">{reportResult.llm_explanation}</p>
-              </div>
-            )}
-            {!reportLoading && !reportResult && (
-              <p className="muted">
-                Groq explanations appear after a successful analysis.
-              </p>
-            )}
-          </div>
-        </div>
-      </div>
-    </section>
-  );
-
-  const reportPage = (
-    <>
-      <header className="hero page-hero">
-        <div className="hero-copy">
-          <span className="pill">Clinical report intelligence</span>
-          <h1 className="hero-title">
-            Report <span>Analysis</span>
-          </h1>
-          <p className="lead">
-            Upload lab reports, extract biomarkers, and surface risks in a structured view.
-          </p>
-          <div className="hero-meta">
-            <div className="meta-chip">PDF, image, or TXT supported</div>
-            <div className="meta-chip">Risk + narrative output</div>
-          </div>
-        </div>
-        <div className="hero-card">
-          <div className="hero-metric">
-            <span>Latest status</span>
-            <strong>
-              {reportLoading ? "Analyzing" : reportResult ? "Complete" : "Idle"}
-            </strong>
-          </div>
-          <div className="hero-metric">
-            <span>Values extracted</span>
-            <strong>{reportStats.valueCount}</strong>
-          </div>
-          <div className="hero-metric">
-            <span>Risk level</span>
-            <strong>{reportResult?.risk_analysis.risk_level ?? "n/a"}</strong>
-          </div>
-        </div>
-      </header>
-      {reportPanel}
-    </>
-  );
-
   const docsPath = useMemo(() => {
     const raw = location.pathname.replace(/^\/docs\/?/, "").replace(/\/$/, "");
     return raw || "";
@@ -4779,7 +4349,7 @@ export default function App() {
         const href = `/docs/${linkPath}`.replace(/\/$/, "");
         const isActive =
           (!docsPath && linkPath === "") || docsPath === linkPath;
-        return (
+                  return (
           <li key={`${item.label}-${linkPath}`}>
             {item.path !== undefined ? (
               <Link
@@ -4793,8 +4363,8 @@ export default function App() {
             )}
             {item.children && renderDocsNav(item.children)}
           </li>
-        );
-      })}
+                  );
+                })}
     </ul>
   );
 
@@ -4826,7 +4396,7 @@ export default function App() {
           <span>Learn Corpus Medica</span>
           <span className="docs-breadcrumb-sep">›</span>
           <strong>{docsKey.replace(/(^|\/)(\w)/g, (_m, sep, c) => `${sep}${c.toUpperCase()}`)}</strong>
-        </div>
+                </div>
         <ReactMarkdown
           remarkPlugins={[remarkGfm]}
           components={{
@@ -4864,7 +4434,7 @@ export default function App() {
           <p className="docs-toc-empty">No sections detected.</p>
         )}
       </aside>
-    </div>
+                    </div>
   );
 
   if (showAuthGate) {
@@ -6637,6 +6207,12 @@ export default function App() {
             >
               Docs
             </Link>
+            <Link
+              className={`topbar-link ${location.pathname === "/dev" ? "active" : ""}`}
+              to="/dev"
+            >
+              Team
+            </Link>
           </nav>
           {authUser && (
             <div className="topbar-actions">
@@ -7443,8 +7019,9 @@ export default function App() {
             </>
           }
         />
-        <Route path="/reports" element={reportPage} />
+        <Route path="/reports" element={<ReportAnalysis />} />
         <Route path="/docs/*" element={docsPage} />
+        <Route path="/dev" element={<DevPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
       </div>
