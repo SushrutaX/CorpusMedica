@@ -60,6 +60,13 @@ def _prune_cache(cache: Dict[str, Tuple[Path, float]]) -> None:
         shutil.rmtree(path, ignore_errors=True)
 
 
+def _is_empty_file(path: Path) -> bool:
+    try:
+        return path.exists() and path.stat().st_size == 0
+    except OSError:
+        return False
+
+
 def _ensure_zip_extracted(path: Path) -> Path:
     cache_key = _cache_key_for_path(path)
     with _CACHE_LOCK:
@@ -129,7 +136,10 @@ def _ensure_uncompressed_nifti(path: Path) -> Path:
     out_path = cached / "volume.nii"
     sentinel = cached / ".complete"
     if sentinel.exists() and out_path.exists():
-        return out_path
+        if _is_empty_file(out_path):
+            shutil.rmtree(cached, ignore_errors=True)
+        else:
+            return out_path
 
     shutil.rmtree(cached, ignore_errors=True)
     cached.mkdir(parents=True, exist_ok=True)
@@ -139,6 +149,9 @@ def _ensure_uncompressed_nifti(path: Path) -> Path:
     except Exception as exc:
         shutil.rmtree(cached, ignore_errors=True)
         raise ValueError("Failed to prepare volume for fast slicing.") from exc
+    if _is_empty_file(out_path):
+        shutil.rmtree(cached, ignore_errors=True)
+        raise ValueError("Extracted volume is empty. Re-upload the file.")
 
     sentinel.touch()
     return out_path
@@ -233,6 +246,8 @@ def _convert_dicom_to_nifti(dicom_dir: Path, output_dir: Path) -> Path:
 
 
 def _load_single_nifti(path: Path) -> Tuple[np.ndarray, List[float]]:
+    if _is_empty_file(path):
+        raise ValueError("NIfTI file is empty. Re-upload the file.")
     image = nib.load(str(path))
     data = image.get_fdata().astype(np.float32)
     if data.ndim == 4 and data.shape[-1] == 1:
@@ -353,6 +368,8 @@ def _slice_from_nifti(
     path: Path, axis_index: int, index: int, channel: int
 ) -> np.ndarray:
     target_path = _ensure_uncompressed_nifti(path)
+    if _is_empty_file(target_path):
+        raise ValueError("NIfTI cache is empty. Re-upload the file.")
     image = nib.load(str(target_path))
     shape = image.shape
     if len(shape) < 3 or len(shape) > 4:
@@ -775,6 +792,21 @@ def volume_mesh(
     label: Optional[int] = Query(
         None, description="Optional label value to extract."
     ),
+    vessel: bool = Query(
+        False, description="Apply vesselness filter before mesh extraction."
+    ),
+    vessel_threshold: Optional[float] = Query(
+        None, ge=0.0, le=1.0, description="Vesselness threshold (0-1)."
+    ),
+    vessel_sigma_min: float = Query(
+        1.0, ge=0.5, le=6.0, description="Vesselness minimum sigma."
+    ),
+    vessel_sigma_max: float = Query(
+        3.0, ge=1.0, le=10.0, description="Vesselness maximum sigma."
+    ),
+    vessel_step: int = Query(
+        3, ge=1, le=6, description="Downsample step for vesselness."
+    ),
 ):
     resolved = _resolve_upload_path(path)
     try:
@@ -792,9 +824,41 @@ def volume_mesh(
     if label is not None:
         volume = (volume == label).astype(np.float32)
         iso = 0.5
+        vessel = False
+
+    mesh_step = step
+    if vessel:
+        try:
+            from skimage.filters import frangi
+        except Exception as exc:
+            raise HTTPException(
+                status_code=500,
+                detail="Vesselness dependency missing.",
+            ) from exc
+
+        downsample = max(step, vessel_step)
+        if downsample > 1:
+            volume = volume[::downsample, ::downsample, ::downsample]
+            zooms = [float(item) * downsample for item in zooms]
+        volume = volume.astype(np.float32, copy=False)
+        vmin = float(np.nanmin(volume))
+        vmax = float(np.nanmax(volume))
+        if vmax > vmin:
+            volume = (volume - vmin) / (vmax - vmin)
+        sigmas = np.linspace(vessel_sigma_min, vessel_sigma_max, num=3)
+        vesselness = frangi(volume, sigmas=sigmas, black_ridges=False)
+        vesselness = np.nan_to_num(vesselness, nan=0.0, posinf=0.0, neginf=0.0)
+        if vessel_threshold is None:
+            vessel_threshold = float(np.percentile(vesselness, 98))
+        mask = vesselness >= vessel_threshold
+        volume = mask.astype(np.float32)
+        iso = 0.5
+        mesh_step = 1
 
     try:
-        vertices, faces, normals = _mesh_from_volume(volume, zooms, iso, step)
+        vertices, faces, normals = _mesh_from_volume(
+            volume, zooms, iso, mesh_step
+        )
     except RuntimeError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
     except Exception as exc:
