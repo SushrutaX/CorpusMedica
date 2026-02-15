@@ -4,3 +4,9 @@ models/bundles/**/*.nii filter=lfs diff=lfs merge=lfs -text
 models/bundles/**/*.nii.gz filter=lfs diff=lfs merge=lfs -text
 *.pt filter=lfs diff=lfs merge=lfs -text
 *.zip filter=lfs diff=lfs merge=lfs -text
+Anatomy-WebGL/Build/*.unityweb filter=lfs diff=lfs merge=lfs -text
+Anatomy-WebGL/TemplateData/* filter=lfs diff=lfs merge=lfs -text
+Anatomy-WebGL/StreamingAssets/* filter=lfs diff=lfs merge=lfs -text
+Anatomy-WebGL/*.png filter=lfs diff=lfs merge=lfs -text
+Anatomy-WebGL/*.ico filter=lfs diff=lfs merge=lfs -text
+Anatomy-WebGL/*.html filter=lfs diff=lfs merge=lfs -text

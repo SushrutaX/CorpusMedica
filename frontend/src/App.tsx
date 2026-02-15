@@ -297,6 +297,7 @@ type MeshOverlayVolume = {
   dataRange: [number, number];
   dimensions: [number, number, number];
   spacing: [number, number, number];
+  origin?: [number, number, number];
   materialPreset: OverlayMaterialPreset;
   opacity: number;
   visible: boolean;
@@ -477,6 +478,8 @@ const API_BASE: string =
   (import.meta.env.VITE_API_BASE_URL as string) || "http://localhost:8000";
 const AUTH_BASE: string =
   (import.meta.env.VITE_AUTH_BASE_URL as string) || "http://localhost:9000";
+const Z_ANATOMY_URL: string =
+  (import.meta.env.VITE_Z_ANATOMY_URL as string) || "http://localhost:5174";
 const AUTH_REQUIRED =
   ((import.meta.env.VITE_AUTH_REQUIRED as string) ?? "false") === "true";
 const AUTH_TOKEN_KEY = "medai_auth_token";
@@ -1197,7 +1200,9 @@ export default function App() {
           const clipValue =
             typeof item.clipValue === "number"
               ? Math.max(0, Math.min(item.clipValue, 1))
-              : 0.5;
+              : 0;
+          const normalizedClipValue =
+            !clipEnabled && clipValue === 0.5 ? 0 : clipValue;
           const explodeEnabled =
             typeof item.explodeEnabled === "boolean" ? item.explodeEnabled : false;
           const explodeDistance =
@@ -1225,7 +1230,7 @@ export default function App() {
             rotation: rotation as [number, number, number],
             clipEnabled,
             clipAxis,
-            clipValue,
+            clipValue: normalizedClipValue,
             explodeEnabled,
             explodeDistance,
           } as MeshOverlayItem;
@@ -2523,21 +2528,46 @@ export default function App() {
       const vtkPlane = vtkPlaneRef.current;
       if (!vtkPlane) return;
       const plane = overlay.clipPlane ?? vtkPlane.newInstance();
-      const [dx, dy, dz] = overlay.dimensions;
-      const [sx, sy, sz] = overlay.spacing;
-      const maxX = dx * sx;
-      const maxY = dy * sy;
-      const maxZ = dz * sz;
+      let minX = 0;
+      let maxX = 0;
+      let minY = 0;
+      let maxY = 0;
+      let minZ = 0;
+      let maxZ = 0;
+      if (typeof overlay.volume?.getBounds === "function") {
+        const bounds = overlay.volume.getBounds();
+        if (Array.isArray(bounds) && bounds.length >= 6) {
+          [minX, maxX, minY, maxY, minZ, maxZ] = bounds;
+        }
+      }
+      if (minX === maxX && minY === maxY && minZ === maxZ) {
+        const [dx, dy, dz] = overlay.dimensions;
+        const [sx, sy, sz] = overlay.spacing;
+        const sizeX = dx * sx;
+        const sizeY = dy * sy;
+        const sizeZ = dz * sz;
+        const origin = overlay.origin ?? [
+          -sizeX / 2,
+          -sizeY / 2,
+          -sizeZ / 2,
+        ];
+        minX = origin[0];
+        minY = origin[1];
+        minZ = origin[2];
+        maxX = minX + sizeX;
+        maxY = minY + sizeY;
+        maxZ = minZ + sizeZ;
+      }
       const value = Math.max(0, Math.min(item.clipValue ?? 0.5, 1));
       if (item.clipAxis === "x") {
         plane.setNormal(1, 0, 0);
-        plane.setOrigin(maxX * value, 0, 0);
+        plane.setOrigin(minX + (maxX - minX) * value, minY, minZ);
       } else if (item.clipAxis === "y") {
         plane.setNormal(0, 1, 0);
-        plane.setOrigin(0, maxY * value, 0);
+        plane.setOrigin(minX, minY + (maxY - minY) * value, minZ);
       } else {
         plane.setNormal(0, 0, 1);
-        plane.setOrigin(0, 0, maxZ * value);
+        plane.setOrigin(minX, minY, minZ + (maxZ - minZ) * value);
       }
       if (typeof overlay.mapper?.addClippingPlane === "function") {
         overlay.mapper.addClippingPlane(plane);
@@ -4146,11 +4176,12 @@ export default function App() {
               const imageData = vtkImageData.newInstance();
               imageData.setDimensions(dimensions);
               imageData.setSpacing(spacing);
-              imageData.setOrigin([
+              const origin: [number, number, number] = [
                 -(dimensions[0] * spacing[0]) / 2,
                 -(dimensions[1] * spacing[1]) / 2,
                 -(dimensions[2] * spacing[2]) / 2,
-              ]);
+              ];
+              imageData.setOrigin(origin);
               const scalars = vtkDataArray.newInstance({
                 name: "Scalars",
                 numberOfComponents: 1,
@@ -4158,7 +4189,7 @@ export default function App() {
               });
               imageData.getPointData().setScalars(scalars);
               const dataRange = scalars.getRange();
-              return { imageData, dataRange, dimensions, spacing };
+              return { imageData, dataRange, dimensions, spacing, origin };
             };
 
             const createOverlayVolume = async (item: MeshOverlayItem) => {
@@ -4215,6 +4246,7 @@ export default function App() {
                 dataRange: parsed.dataRange,
                 dimensions: parsed.dimensions,
                 spacing: parsed.spacing,
+                origin: parsed.origin,
                 materialPreset: item.materialPreset ?? "brain",
                 opacity: item.opacity,
                 visible: item.visible,
@@ -4223,7 +4255,7 @@ export default function App() {
                 rotation: item.rotation ?? [0, 0, 0],
                 clipEnabled: item.clipEnabled ?? false,
                 clipAxis: item.clipAxis ?? "z",
-                clipValue: item.clipValue ?? 0.5,
+                clipValue: item.clipValue ?? 0,
                 clipPlane: null,
                 explodeEnabled: item.explodeEnabled ?? false,
                 explodeDistance: item.explodeDistance ?? 0.25,
@@ -5991,21 +6023,41 @@ export default function App() {
       const vtkPlane = vtkPlaneRef.current;
       if (!vtkPlane) return;
       const plane = state.clipPlane ?? vtkPlane.newInstance();
-      const [dx, dy, dz] = state.dimensions;
-      const [sx, sy, sz] = state.spacing;
-      const maxX = dx * sx;
-      const maxY = dy * sy;
-      const maxZ = dz * sz;
+      let minX = 0;
+      let maxX = 0;
+      let minY = 0;
+      let maxY = 0;
+      let minZ = 0;
+      let maxZ = 0;
+      if (typeof state.volume?.getBounds === "function") {
+        const bounds = state.volume.getBounds();
+        if (Array.isArray(bounds) && bounds.length >= 6) {
+          [minX, maxX, minY, maxY, minZ, maxZ] = bounds;
+        }
+      }
+      if (minX === maxX && minY === maxY && minZ === maxZ) {
+        const [dx, dy, dz] = state.dimensions;
+        const [sx, sy, sz] = state.spacing;
+        const sizeX = dx * sx;
+        const sizeY = dy * sy;
+        const sizeZ = dz * sz;
+        minX = -sizeX / 2;
+        minY = -sizeY / 2;
+        minZ = -sizeZ / 2;
+        maxX = minX + sizeX;
+        maxY = minY + sizeY;
+        maxZ = minZ + sizeZ;
+      }
       const value = Math.max(0, Math.min(clipValue, 1));
       if (clipAxis === "x") {
         plane.setNormal(1, 0, 0);
-        plane.setOrigin(maxX * value, 0, 0);
+        plane.setOrigin(minX + (maxX - minX) * value, minY, minZ);
       } else if (clipAxis === "y") {
         plane.setNormal(0, 1, 0);
-        plane.setOrigin(0, maxY * value, 0);
+        plane.setOrigin(minX, minY + (maxY - minY) * value, minZ);
       } else {
         plane.setNormal(0, 0, 1);
-        plane.setOrigin(0, 0, maxZ * value);
+        plane.setOrigin(minX, minY, minZ + (maxZ - minZ) * value);
       }
       state.volumeMapper.addClippingPlane(plane);
       state.clipPlane = plane;
@@ -6293,7 +6345,7 @@ export default function App() {
           rotation: [0, 0, 0],
           clipEnabled: false,
           clipAxis: "z",
-          clipValue: 0.5,
+          clipValue: 0,
           explodeEnabled: false,
           explodeDistance: 0.25,
         });
@@ -6425,7 +6477,7 @@ export default function App() {
         rotation: [0, 0, 0],
         clipEnabled: false,
         clipAxis: "z",
-        clipValue: 0.5,
+        clipValue: 0,
         explodeEnabled: false,
         explodeDistance: 0.25,
       };
@@ -8794,6 +8846,8 @@ export default function App() {
     return workspacePage;
   }
 
+  const isDevRoute = location.pathname === "/developers";
+
   return (
     <div
       className={`app-shell ${isDocsRoute ? "docs-shell" : ""} ${
@@ -8803,7 +8857,7 @@ export default function App() {
       <div className="ambient" aria-hidden="true" />
       <div
         className={`topbar topbar-full ${
-          isDocsRoute || isAnatomyRoute ? "topbar-compact" : ""
+          isDocsRoute || isAnatomyRoute || isDevRoute ? "topbar-compact" : ""
         } ${isDocsRoute ? "topbar-docs" : ""}`}
       >
         <div className="topbar-inner">
@@ -8830,6 +8884,14 @@ export default function App() {
             >
               Female anatomy
             </Link>
+            <a
+              className="topbar-link"
+              href={Z_ANATOMY_URL}
+              target="_blank"
+              rel="noreferrer"
+            >
+              Anatomy
+            </a>
             <Link
               className={`topbar-link topbar-link-docs ${
                 location.pathname.startsWith("/docs") ? "active" : ""
@@ -8866,7 +8928,12 @@ export default function App() {
           )}
         </div>
       </div>
-      <div className={`app ${isDocsRoute || isAnatomyRoute ? "app-full" : ""}`} id="top">
+      <div
+        className={`app ${
+          isDocsRoute || isAnatomyRoute || isDevRoute ? "app-full" : ""
+        }`}
+        id="top"
+      >
       <Routes>
         <Route
           path="/"
