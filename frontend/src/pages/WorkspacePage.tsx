@@ -247,6 +247,19 @@ const WorkspacePage = (props: WorkspacePageProps) => {
     overlayOrderMap.set(item.id, index + 1);
   });
 
+  const isEditableTarget = (target: EventTarget | null) => {
+    if (!target || !(target instanceof HTMLElement)) {
+      return false;
+    }
+    const tag = target.tagName.toLowerCase();
+    return (
+      target.isContentEditable ||
+      tag === "input" ||
+      tag === "textarea" ||
+      tag === "select"
+    );
+  };
+
   useEffect(() => {
     const handleClick = (event: MouseEvent) => {
       if (!menuRef.current?.contains(event.target as Node)) {
@@ -254,7 +267,234 @@ const WorkspacePage = (props: WorkspacePageProps) => {
       }
     };
     const handleKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
+      if (isEditableTarget(event.target)) {
+        return;
+      }
+      const key = event.key.toLowerCase();
+      const code = event.code;
+      const meta = event.ctrlKey || event.metaKey;
+      const shift = event.shiftKey;
+      const alt = event.altKey;
+
+      if (key === "escape") {
+        setOpenMenu(null);
+        return;
+      }
+
+      if (key === "f1") {
+        event.preventDefault();
+        if (shift) {
+          window.location.assign("/docs/frontend/workspace");
+        } else {
+          window.location.assign("/docs");
+        }
+        setOpenMenu(null);
+        return;
+      }
+
+      if (key === "?" && !meta && !alt) {
+        event.preventDefault();
+        window.alert(
+          "Shortcuts: Ctrl+Shift drag to orbit, Shift+drag to pan, scroll to zoom. Use M/R + axis + drag to move/rotate meshes."
+        );
+        setOpenMenu(null);
+        return;
+      }
+
+      if (meta && !shift && key === "o") {
+        event.preventDefault();
+        uploadInputRef.current?.click();
+        setOpenMenu(null);
+        return;
+      }
+      if (meta && !shift && key === "u") {
+        event.preventDefault();
+        handleUpload();
+        setOpenMenu(null);
+        return;
+      }
+      if (meta && shift && key === "w") {
+        event.preventDefault();
+        clearWorkspaceUploads();
+        setOpenMenu(null);
+        return;
+      }
+      if (meta && !shift && key === "e") {
+        event.preventDefault();
+        handleExportAnnotations();
+        setOpenMenu(null);
+        return;
+      }
+      if (meta && shift && key === "b") {
+        event.preventDefault();
+        handleBackToWorkflow();
+        setOpenMenu(null);
+        return;
+      }
+      if (meta && !shift && key === "z") {
+        event.preventDefault();
+        handleUndo();
+        setOpenMenu(null);
+        return;
+      }
+      if (meta && shift && key === "c") {
+        event.preventDefault();
+        handleClearSlice();
+        setOpenMenu(null);
+        return;
+      }
+      if (meta && shift && key === "a") {
+        event.preventDefault();
+        handleClearAll();
+        setOpenMenu(null);
+        return;
+      }
+      if (meta && shift && key === "m") {
+        event.preventDefault();
+        clearMeshSelection();
+        setOpenMenu(null);
+        return;
+      }
+      if (meta && shift && key === "l") {
+        event.preventDefault();
+        clearMeshLabel();
+        setOpenMenu(null);
+        return;
+      }
+      if (meta && shift && key === "r") {
+        event.preventDefault();
+        resetPartOffsets();
+        setOpenMenu(null);
+        return;
+      }
+      if (meta && shift && key === "k") {
+        event.preventDefault();
+        requestMeshRebuild();
+        setOpenMenu(null);
+        return;
+      }
+
+      if (alt && !shift && code === "Digit1") {
+        event.preventDefault();
+        setViewerMode("2d");
+        setOpenMenu(null);
+        return;
+      }
+      if (alt && !shift && code === "Digit2") {
+        event.preventDefault();
+        setViewerMode("3d");
+        setOpenMenu(null);
+        return;
+      }
+      if (alt && !shift && code === "Digit3") {
+        event.preventDefault();
+        setViewerMode("3d");
+        setViewer3dMode("volume");
+        setOpenMenu(null);
+        return;
+      }
+      if (alt && !shift && code === "Digit4") {
+        event.preventDefault();
+        setViewerMode("3d");
+        setViewer3dMode("mesh");
+        setOpenMenu(null);
+        return;
+      }
+      if (alt && !shift && key === "l") {
+        event.preventDefault();
+        setShowLeftShelf((prev: boolean) => !prev);
+        setOpenMenu(null);
+        return;
+      }
+      if (alt && !shift && key === "r") {
+        event.preventDefault();
+        setShowRightShelf((prev: boolean) => !prev);
+        setOpenMenu(null);
+        return;
+      }
+      if (alt && !shift && key === "w") {
+        event.preventDefault();
+        setMeshWireframe((prev: boolean) => !prev);
+        setOpenMenu(null);
+        return;
+      }
+      if (alt && !shift && key === "v") {
+        event.preventDefault();
+        setMeshVolumeEnabled((prev: boolean) => !prev);
+        setOpenMenu(null);
+        return;
+      }
+      if (alt && !shift && key === "t") {
+        event.preventDefault();
+        setMeshOverlayEnabled((prev: boolean) => !prev);
+        setOpenMenu(null);
+        return;
+      }
+      if (alt && !shift && key === "c") {
+        event.preventDefault();
+        setMeshClipEnabled((prev: boolean) => !prev);
+        setOpenMenu(null);
+        return;
+      }
+      if (alt && !shift && key === "x") {
+        event.preventDefault();
+        setMeshExplodeEnabled((prev: boolean) => !prev);
+        setOpenMenu(null);
+        return;
+      }
+      if (alt && !shift && key === "i") {
+        event.preventDefault();
+        if (meshPartCount > 1) {
+          setMeshIsolateEnabled((prev: boolean) => !prev);
+        }
+        setOpenMenu(null);
+        return;
+      }
+
+      if (shift && !meta && !alt && code.startsWith("Digit")) {
+        const index = Number(code.replace("Digit", "")) - 1;
+        const tool = WORKSPACE_TOOLS[index];
+        if (tool) {
+          event.preventDefault();
+          setWorkspaceTool(tool.id);
+          setOpenMenu(null);
+          return;
+        }
+      }
+
+      if (alt && shift && key === "q") {
+        event.preventDefault();
+        setMeshTool("orbit");
+        setOpenMenu(null);
+        return;
+      }
+      if (alt && shift && key === "w") {
+        event.preventDefault();
+        setMeshTool("sculpt");
+        setOpenMenu(null);
+        return;
+      }
+      if (alt && shift && key === "e") {
+        event.preventDefault();
+        setMeshTool("carve");
+        setOpenMenu(null);
+        return;
+      }
+      if (alt && shift && key === "r") {
+        event.preventDefault();
+        setMeshTool("select");
+        setOpenMenu(null);
+        return;
+      }
+      if (alt && shift && key === "t") {
+        event.preventDefault();
+        setMeshTool("label");
+        setOpenMenu(null);
+        return;
+      }
+      if (alt && shift && key === "l") {
+        event.preventDefault();
+        setMeshLabelEnabled((prev: boolean) => !prev);
         setOpenMenu(null);
       }
     };
@@ -264,7 +504,35 @@ const WorkspacePage = (props: WorkspacePageProps) => {
       document.removeEventListener("mousedown", handleClick);
       window.removeEventListener("keydown", handleKey);
     };
-  }, []);
+  }, [
+    WORKSPACE_TOOLS,
+    clearMeshLabel,
+    clearMeshSelection,
+    clearWorkspaceUploads,
+    handleBackToWorkflow,
+    handleClearAll,
+    handleClearSlice,
+    handleExportAnnotations,
+    handleUpload,
+    handleUndo,
+    meshPartCount,
+    requestMeshRebuild,
+    resetPartOffsets,
+    setMeshClipEnabled,
+    setMeshExplodeEnabled,
+    setMeshIsolateEnabled,
+    setMeshLabelEnabled,
+    setMeshOverlayEnabled,
+    setMeshTool,
+    setMeshVolumeEnabled,
+    setMeshWireframe,
+    setOpenMenu,
+    setShowLeftShelf,
+    setShowRightShelf,
+    setViewer3dMode,
+    setViewerMode,
+    setWorkspaceTool,
+  ]);
 
   const toggleMenu = (
     name: "file" | "edit" | "view" | "annotate" | "render" | "help"
@@ -301,6 +569,7 @@ const WorkspacePage = (props: WorkspacePageProps) => {
                     }}
                   >
                     Choose files
+                    <span className="menu-shortcut">Ctrl+O</span>
                   </button>
                   <button
                     type="button"
@@ -314,6 +583,7 @@ const WorkspacePage = (props: WorkspacePageProps) => {
                     }
                   >
                     Upload selected
+                    <span className="menu-shortcut">Ctrl+U</span>
                   </button>
                   <button
                     type="button"
@@ -325,6 +595,7 @@ const WorkspacePage = (props: WorkspacePageProps) => {
                     disabled={!workspaceUploads.length}
                   >
                     Clear workspace files
+                    <span className="menu-shortcut">Ctrl+Shift+W</span>
                   </button>
                   <div className="menu-divider" />
                   <button
@@ -337,6 +608,7 @@ const WorkspacePage = (props: WorkspacePageProps) => {
                     disabled={annotationSummary.total === 0}
                   >
                     Export annotations
+                    <span className="menu-shortcut">Ctrl+E</span>
                   </button>
                   <button
                     type="button"
@@ -347,6 +619,7 @@ const WorkspacePage = (props: WorkspacePageProps) => {
                     }}
                   >
                     Back to overview
+                    <span className="menu-shortcut">Ctrl+Shift+B</span>
                   </button>
                 </div>
               )}
@@ -372,6 +645,7 @@ const WorkspacePage = (props: WorkspacePageProps) => {
                     }}
                   >
                     Undo
+                    <span className="menu-shortcut">Ctrl+Z</span>
                   </button>
                   <button
                     type="button"
@@ -382,6 +656,7 @@ const WorkspacePage = (props: WorkspacePageProps) => {
                     }}
                   >
                     Clear slice
+                    <span className="menu-shortcut">Ctrl+Shift+C</span>
                   </button>
                   <button
                     type="button"
@@ -392,6 +667,7 @@ const WorkspacePage = (props: WorkspacePageProps) => {
                     }}
                   >
                     Clear all
+                    <span className="menu-shortcut">Ctrl+Shift+A</span>
                   </button>
                   <div className="menu-divider" />
                   <span className="menu-section">Mesh edits</span>
@@ -405,6 +681,7 @@ const WorkspacePage = (props: WorkspacePageProps) => {
                     disabled={meshSelectionCount === 0}
                   >
                     Clear mesh selection
+                    <span className="menu-shortcut">Ctrl+Shift+M</span>
                   </button>
                   <button
                     type="button"
@@ -416,6 +693,7 @@ const WorkspacePage = (props: WorkspacePageProps) => {
                     disabled={!meshPickedLabel}
                   >
                     Clear mesh label
+                    <span className="menu-shortcut">Ctrl+Shift+L</span>
                   </button>
                   <button
                     type="button"
@@ -427,6 +705,7 @@ const WorkspacePage = (props: WorkspacePageProps) => {
                     disabled={!hasPartOffsets}
                   >
                     Reset part offsets
+                    <span className="menu-shortcut">Ctrl+Shift+R</span>
                   </button>
                 </div>
               )}
@@ -454,6 +733,7 @@ const WorkspacePage = (props: WorkspacePageProps) => {
                     }}
                   >
                     2D slices
+                    <span className="menu-shortcut">Alt+1</span>
                   </button>
                   <button
                     type="button"
@@ -466,6 +746,7 @@ const WorkspacePage = (props: WorkspacePageProps) => {
                     }}
                   >
                     3D viewer
+                    <span className="menu-shortcut">Alt+2</span>
                   </button>
                   {viewerMode === "3d" && (
                     <>
@@ -480,6 +761,7 @@ const WorkspacePage = (props: WorkspacePageProps) => {
                         }}
                       >
                         Volume mode
+                        <span className="menu-shortcut">Alt+3</span>
                       </button>
                       <button
                         type="button"
@@ -492,6 +774,7 @@ const WorkspacePage = (props: WorkspacePageProps) => {
                         }}
                       >
                         Mesh mode
+                        <span className="menu-shortcut">Alt+4</span>
                       </button>
                     </>
                   )}
@@ -508,6 +791,7 @@ const WorkspacePage = (props: WorkspacePageProps) => {
                     }}
                   >
                     {showLeftShelf ? "Hide left shelf" : "Show left shelf"}
+                    <span className="menu-shortcut">Alt+L</span>
                   </button>
                   <button
                     type="button"
@@ -520,6 +804,7 @@ const WorkspacePage = (props: WorkspacePageProps) => {
                     }}
                   >
                     {showRightShelf ? "Hide right shelf" : "Show right shelf"}
+                    <span className="menu-shortcut">Alt+R</span>
                   </button>
                   <div className="menu-divider" />
                   <button
@@ -533,6 +818,7 @@ const WorkspacePage = (props: WorkspacePageProps) => {
                     }}
                   >
                     Wireframe
+                    <span className="menu-shortcut">Alt+W</span>
                   </button>
                 </div>
               )}
@@ -550,7 +836,7 @@ const WorkspacePage = (props: WorkspacePageProps) => {
                 <div className="menu-panel" role="menu">
                   <span className="menu-section">2D tools</span>
                   {WORKSPACE_TOOLS.map(
-                    (tool: { id: string; label: string }) => (
+                    (tool: { id: string; label: string }, index: number) => (
                       <button
                         key={tool.id}
                         type="button"
@@ -563,6 +849,9 @@ const WorkspacePage = (props: WorkspacePageProps) => {
                         }}
                       >
                         {tool.label}
+                        <span className="menu-shortcut">
+                          Shift+{index + 1}
+                        </span>
                       </button>
                     )
                   )}
@@ -570,12 +859,32 @@ const WorkspacePage = (props: WorkspacePageProps) => {
                   <span className="menu-section">3D mesh tools</span>
                   {(
                     [
-                      { id: "orbit", label: "Orbit" },
-                      { id: "sculpt", label: "Sculpt" },
-                      { id: "carve", label: "Carve" },
-                      { id: "select", label: "Select" },
-                      { id: "label", label: "Label" },
-                    ] as Array<{ id: MeshTool; label: string }>
+                      {
+                        id: "orbit",
+                        label: "Orbit",
+                        shortcut: "Alt+Shift+Q",
+                      },
+                      {
+                        id: "sculpt",
+                        label: "Sculpt",
+                        shortcut: "Alt+Shift+W",
+                      },
+                      {
+                        id: "carve",
+                        label: "Carve",
+                        shortcut: "Alt+Shift+E",
+                      },
+                      {
+                        id: "select",
+                        label: "Select",
+                        shortcut: "Alt+Shift+R",
+                      },
+                      {
+                        id: "label",
+                        label: "Label",
+                        shortcut: "Alt+Shift+T",
+                      },
+                    ] as Array<{ id: MeshTool; label: string; shortcut: string }>
                   ).map((tool) => (
                     <button
                       key={tool.id}
@@ -589,6 +898,7 @@ const WorkspacePage = (props: WorkspacePageProps) => {
                       }}
                     >
                       {tool.label}
+                      <span className="menu-shortcut">{tool.shortcut}</span>
                     </button>
                   ))}
                   <button
@@ -602,6 +912,7 @@ const WorkspacePage = (props: WorkspacePageProps) => {
                     }}
                   >
                     Toggle mesh labels
+                    <span className="menu-shortcut">Alt+Shift+L</span>
                   </button>
                 </div>
               )}
@@ -626,6 +937,7 @@ const WorkspacePage = (props: WorkspacePageProps) => {
                     }}
                   >
                     Rebuild mesh
+                    <span className="menu-shortcut">Ctrl+Shift+K</span>
                   </button>
                   <div className="menu-divider" />
                   <span className="menu-section">Layers</span>
@@ -640,6 +952,7 @@ const WorkspacePage = (props: WorkspacePageProps) => {
                     }}
                   >
                     Volume underlay
+                    <span className="menu-shortcut">Alt+V</span>
                   </button>
                   <button
                     type="button"
@@ -652,6 +965,7 @@ const WorkspacePage = (props: WorkspacePageProps) => {
                     }}
                   >
                     Tumor overlay
+                    <span className="menu-shortcut">Alt+T</span>
                   </button>
                   <div className="menu-divider" />
                   <span className="menu-section">Effects</span>
@@ -666,6 +980,7 @@ const WorkspacePage = (props: WorkspacePageProps) => {
                     }}
                   >
                     Clipping
+                    <span className="menu-shortcut">Alt+C</span>
                   </button>
                   <button
                     type="button"
@@ -678,6 +993,7 @@ const WorkspacePage = (props: WorkspacePageProps) => {
                     }}
                   >
                     Explode view
+                    <span className="menu-shortcut">Alt+X</span>
                   </button>
                   <button
                     type="button"
@@ -691,6 +1007,7 @@ const WorkspacePage = (props: WorkspacePageProps) => {
                     disabled={meshPartCount <= 1}
                   >
                     Isolate part
+                    <span className="menu-shortcut">Alt+I</span>
                   </button>
                 </div>
               )}
@@ -715,6 +1032,7 @@ const WorkspacePage = (props: WorkspacePageProps) => {
                     }}
                   >
                     Documentation
+                    <span className="menu-shortcut">F1</span>
                   </button>
                   <button
                     type="button"
@@ -725,6 +1043,7 @@ const WorkspacePage = (props: WorkspacePageProps) => {
                     }}
                   >
                     Workspace guide
+                    <span className="menu-shortcut">Shift+F1</span>
                   </button>
                   <button
                     type="button"
@@ -737,6 +1056,7 @@ const WorkspacePage = (props: WorkspacePageProps) => {
                     }}
                   >
                     Keyboard shortcuts
+                    <span className="menu-shortcut">?</span>
                   </button>
                 </div>
               )}
@@ -1748,11 +2068,21 @@ const WorkspacePage = (props: WorkspacePageProps) => {
                                       <input
                                         type="checkbox"
                                         checked={item.clipEnabled ?? false}
-                                        onChange={(event) =>
-                                          updateMeshOverlayItem(item.id, {
-                                            clipEnabled: event.target.checked,
-                                          })
-                                        }
+                                        onChange={(event) => {
+                                          const enabled = event.target.checked;
+                                          const next: Partial<MeshOverlayItem> = {
+                                            clipEnabled: enabled,
+                                          };
+                                          if (
+                                            enabled &&
+                                            (item.clipValue === undefined ||
+                                              item.clipValue === null ||
+                                              (!item.clipEnabled && item.clipValue === 0.5))
+                                          ) {
+                                            next.clipValue = 0;
+                                          }
+                                          updateMeshOverlayItem(item.id, next);
+                                        }}
                                       />
                                       <span>Enable</span>
                                     </label>
@@ -1778,7 +2108,7 @@ const WorkspacePage = (props: WorkspacePageProps) => {
                                         min={0}
                                         max={1}
                                         step={0.02}
-                                        value={item.clipValue ?? 0.5}
+                                        value={item.clipValue ?? 0}
                                         onChange={(event) =>
                                           updateMeshOverlayItem(item.id, {
                                             clipValue: Number(event.target.value),
