@@ -49,6 +49,9 @@ interface ProfileCardProps {
   contactText?: string;
   showUserInfo?: boolean;
   onContactClick?: () => void;
+  cardHeight?: string;
+  cardMaxHeight?: string;
+  photoMode?: boolean;
 }
 
 interface TiltEngine {
@@ -79,7 +82,10 @@ const ProfileCardComponent: React.FC<ProfileCardProps> = ({
   status = 'Online',
   contactText = 'Contact',
   showUserInfo = true,
-  onContactClick
+  onContactClick,
+  cardHeight,
+  cardMaxHeight,
+  photoMode = false
 }) => {
   const wrapRef = useRef<HTMLDivElement>(null);
   const shellRef = useRef<HTMLDivElement>(null);
@@ -341,6 +347,7 @@ const ProfileCardComponent: React.FC<ProfileCardProps> = ({
   const safeAvatarUrl = avatarUrl?.trim();
   const safeIconUrl = iconUrl?.trim();
   const safeGrainUrl = grainUrl?.trim();
+  const isPhotoMode = photoMode && Boolean(safeAvatarUrl);
 
   const cardStyle = useMemo(
     () => ({
@@ -467,8 +474,8 @@ const ProfileCardComponent: React.FC<ProfileCardProps> = ({
         <section
           className="grid relative overflow-hidden"
           style={{
-            height: '80svh',
-            maxHeight: '540px',
+            height: cardHeight ?? '80svh',
+            maxHeight: cardMaxHeight ?? '540px',
             aspectRatio: '0.718',
             borderRadius: cardRadius,
             backgroundBlendMode: 'color-dodge, normal, normal, normal',
@@ -476,8 +483,9 @@ const ProfileCardComponent: React.FC<ProfileCardProps> = ({
               'rgba(0, 0, 0, 0.8) calc((var(--pointer-from-left) * 10px) - 3px) calc((var(--pointer-from-top) * 20px) - 6px) 20px -5px',
             transition: 'transform 1s ease',
             transform: 'translateZ(0) rotateX(0deg) rotateY(0deg)',
-            background: 'rgba(0, 0, 0, 0.9)',
-            backfaceVisibility: 'hidden'
+            background: isPhotoMode ? '#05050b' : 'rgba(0, 0, 0, 0.9)',
+            backfaceVisibility: 'hidden',
+            isolation: 'isolate'
           }}
           onMouseEnter={e => {
             e.currentTarget.style.transition = 'none';
@@ -496,18 +504,30 @@ const ProfileCardComponent: React.FC<ProfileCardProps> = ({
           <div
             className="absolute inset-0"
             style={{
-              backgroundImage: 'var(--inner-gradient)',
-              backgroundColor: 'rgba(0, 0, 0, 0.9)',
+              backgroundImage: isPhotoMode ? 'none' : 'var(--inner-gradient)',
+              backgroundColor: isPhotoMode ? 'transparent' : 'rgba(0, 0, 0, 0.9)',
               borderRadius: cardRadius,
               display: 'grid',
               gridArea: '1 / -1'
             }}
           >
-            {/* Shine layer */}
-            {showShine && <div style={shineStyle} />}
-
-            {/* Glare layer */}
-            <div style={glareStyle} />
+            {isPhotoMode && safeAvatarUrl ? (
+              <div
+                className="absolute inset-0"
+                style={{
+                  backgroundImage: `url(${safeAvatarUrl})`,
+                  backgroundSize: 'cover',
+                  backgroundPosition: 'center',
+                  opacity: 1,
+                  filter: 'saturate(1.05) contrast(1.05)',
+                  zIndex: 2,
+                  borderRadius: cardRadius,
+                  pointerEvents: 'none'
+                }}
+              />
+            ) : null}
+            {!isPhotoMode && showShine && <div style={shineStyle} />}
+            {!isPhotoMode && <div style={glareStyle} />}
 
             {/* Avatar content */}
             <div
@@ -517,7 +537,9 @@ const ProfileCardComponent: React.FC<ProfileCardProps> = ({
                 gridArea: '1 / -1',
                 borderRadius: cardRadius,
                 pointerEvents: 'none',
-                backfaceVisibility: 'hidden'
+                backfaceVisibility: 'hidden',
+                position: 'relative',
+                zIndex: 6
               }}
             >
               {safeAvatarUrl && (
@@ -531,7 +553,8 @@ const ProfileCardComponent: React.FC<ProfileCardProps> = ({
                     transform:
                       'translateX(calc(-50% + (var(--pointer-from-left) - 0.5) * 6px)) translateZ(0) scaleY(calc(1 + (var(--pointer-from-top) - 0.5) * 0.02)) scaleX(calc(1 + (var(--pointer-from-left) - 0.5) * 0.01))',
                     borderRadius: cardRadius,
-                    backfaceVisibility: 'hidden'
+                    backfaceVisibility: 'hidden',
+                    zIndex: 6
                   }}
                   onError={e => {
                     const t = e.target as HTMLImageElement;
