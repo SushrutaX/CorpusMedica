@@ -16,7 +16,9 @@ import {
 import anime from "animejs";
 import ChatPanel from "./components/ChatPanel";
 import DocsPage from "./pages/DocsPage";
-import DevPage from "./pages/devPage";
+import FemaleAnatomyPage from "./pages/FemaleAnatomyPage";
+import ReportAnalysis from "./pages/ReportAnalysis";
+import DevPage from "./pages/DevPage";
 import WorkspacePage from "./pages/WorkspacePage";
 
 type Model = {
@@ -744,6 +746,7 @@ export default function App() {
   const [uploadResult, setUploadResult] = useState<UploadResponse | null>(null);
   const [uploading, setUploading] = useState<boolean>(false);
   const [uploadPreview, setUploadPreview] = useState<UploadPreview | null>(null);
+  const [uploadDropActive, setUploadDropActive] = useState<boolean>(false);
   const [previewPath, setPreviewPath] = useState<string>("");
   const [volumeInfo, setVolumeInfo] = useState<VolumeInfo | null>(null);
   const [viewerLoading, setViewerLoading] = useState<boolean>(false);
@@ -6085,9 +6088,51 @@ export default function App() {
     const lower = name.toLowerCase();
     if (lower.endsWith(".nii") || lower.endsWith(".nii.gz")) return "nifti";
     if (lower.endsWith(".dcm")) return "dicom";
+    if (lower.endsWith(".dicom")) return "dicom";
     if (lower.endsWith(".zip")) return "zip";
     return "unknown";
   };
+
+  const MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024;
+  const normalizeSelectedFiles = useCallback((selected: File[]) => {
+    const seen = new Set<string>();
+    const accepted: File[] = [];
+    const ignoredEmpty: string[] = [];
+    const ignoredLarge: string[] = [];
+    const ignoredUnknown: string[] = [];
+    const ignoredDuplicates: string[] = [];
+
+    selected.forEach((file) => {
+      const key = `${file.name}::${file.size}::${file.lastModified}`;
+      if (seen.has(key)) {
+        ignoredDuplicates.push(file.name);
+        return;
+      }
+      seen.add(key);
+      if (file.size === 0) {
+        ignoredEmpty.push(file.name);
+        return;
+      }
+      if (file.size > MAX_UPLOAD_BYTES) {
+        ignoredLarge.push(file.name);
+        return;
+      }
+      const kind = inferFileKind(file.name);
+      if (kind === "unknown") {
+        ignoredUnknown.push(file.name);
+        return;
+      }
+      accepted.push(file);
+    });
+
+    return {
+      accepted,
+      ignoredEmpty,
+      ignoredLarge,
+      ignoredUnknown,
+      ignoredDuplicates,
+    };
+  }, []);
 
   const selectedFileCount = files.length;
   const selectedFileNames = files.map((item) => item.name);
@@ -6178,7 +6223,14 @@ export default function App() {
 
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
     const selected = Array.from(event.target.files ?? []);
-    setFiles(selected);
+    const {
+      accepted,
+      ignoredEmpty,
+      ignoredLarge,
+      ignoredUnknown,
+      ignoredDuplicates,
+    } = normalizeSelectedFiles(selected);
+    setFiles(accepted);
     setViewerError("");
     setError("");
     if (!isWorkspace) {
@@ -6193,8 +6245,99 @@ export default function App() {
       }
     }
     if (selected.length > 0) {
+      if (ignoredEmpty.length > 0) {
+        pushNotice(
+          "error",
+          "Empty files ignored",
+          `${ignoredEmpty.length} file(s) were empty and skipped.`
+        );
+      }
+      if (ignoredLarge.length > 0) {
+        pushNotice(
+          "error",
+          "Files too large",
+          `${ignoredLarge.length} file(s) exceeded the 2GB limit and were skipped.`
+        );
+      }
+      if (ignoredUnknown.length > 0) {
+        pushNotice(
+          "error",
+          "Unsupported files",
+          `${ignoredUnknown.length} file(s) had unsupported extensions.`
+        );
+      }
+      if (ignoredDuplicates.length > 0) {
+        pushNotice(
+          "info",
+          "Duplicates skipped",
+          `${ignoredDuplicates.length} duplicate file(s) were ignored.`
+        );
+      }
+      if (accepted.length > 0) {
+        const name =
+          accepted.length === 1 ? accepted[0].name : `${accepted.length} files`;
+        pushNotice("info", "Scan selected", `${name} ready to upload.`);
+      }
+    }
+    event.currentTarget.value = "";
+  };
+
+  const handleUploadDrop = (event: ReactDragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    setUploadDropActive(false);
+    const dropped = Array.from(event.dataTransfer.files ?? []);
+    const {
+      accepted,
+      ignoredEmpty,
+      ignoredLarge,
+      ignoredUnknown,
+      ignoredDuplicates,
+    } = normalizeSelectedFiles(dropped);
+    setFiles(accepted);
+    setViewerError("");
+    setError("");
+    if (!isWorkspace) {
+      setUploadResult(null);
+      setUploadPreview(null);
+      setVolumeInfo(null);
+      setJobId("");
+      setJobStatus(null);
+      setJobResult(null);
+      if (workspacePath) {
+        setWorkspacePath("");
+      }
+    }
+    if (ignoredEmpty.length > 0) {
+      pushNotice(
+        "error",
+        "Empty files ignored",
+        `${ignoredEmpty.length} file(s) were empty and skipped.`
+      );
+    }
+    if (ignoredLarge.length > 0) {
+      pushNotice(
+        "error",
+        "Files too large",
+        `${ignoredLarge.length} file(s) exceeded the 2GB limit and were skipped.`
+      );
+    }
+    if (ignoredUnknown.length > 0) {
+      pushNotice(
+        "error",
+        "Unsupported files",
+        `${ignoredUnknown.length} file(s) had unsupported extensions.`
+      );
+    }
+    if (ignoredDuplicates.length > 0) {
+      pushNotice(
+        "info",
+        "Duplicates skipped",
+        `${ignoredDuplicates.length} duplicate file(s) were ignored.`
+      );
+    }
+    if (accepted.length > 0) {
       const name =
-        selected.length === 1 ? selected[0].name : `${selected.length} files`;
+        accepted.length === 1 ? accepted[0].name : `${accepted.length} files`;
       pushNotice("info", "Scan selected", `${name} ready to upload.`);
     }
   };
@@ -7769,6 +7912,7 @@ export default function App() {
 
   const docsPage = <DocsPage />;
   const anatomyPage = <FemaleAnatomyPage />;
+  const reportPage = <ReportAnalysis />;
 
   const workspacePage = (
     <WorkspacePage
@@ -8408,13 +8552,13 @@ export default function App() {
     return workspacePage;
   }
 
-  const isDevRoute = location.pathname === "/developers";
+  const isDevRoute = location.pathname === "/dev";
 
   return (
     <div
       className={`app-shell ${isDocsRoute ? "docs-shell" : ""} ${
         isAnatomyRoute ? "anatomy-shell-page" : ""
-      }`}
+      } ${isDevRoute ? "dev-shell" : ""}`}
     >
       <div className="ambient" aria-hidden="true" />
       <div
@@ -8615,13 +8759,24 @@ export default function App() {
           </span>
         </div>
 
-        <div className={`dropzone ${files.length > 0 ? "has-file" : ""}`}>
+        <div
+          className={`dropzone ${files.length > 0 ? "has-file" : ""} ${
+            uploadDropActive ? "is-active" : ""
+          }`}
+          onDragOver={(event) => {
+            event.preventDefault();
+            setUploadDropActive(true);
+          }}
+          onDragLeave={() => setUploadDropActive(false)}
+          onDrop={handleUploadDrop}
+        >
           <input
             id="scan-upload"
             className="file-input"
             type="file"
             onChange={handleFileChange}
             multiple
+            accept=".nii,.nii.gz,.dcm,.dicom,.zip"
           />
           <label htmlFor="scan-upload">
             <div className="dropzone-main">
@@ -9289,6 +9444,7 @@ export default function App() {
             </>
           }
         />
+        <Route path="/anatomy" element={anatomyPage} />
         <Route path="/reports" element={reportPage} />
         <Route path="/docs/*" element={docsPage} />
         <Route path="/dev" element={<DevPage />} />
