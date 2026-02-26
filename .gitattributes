@@ -10,3 +10,4 @@ Anatomy-WebGL/StreamingAssets/* filter=lfs diff=lfs merge=lfs -text
 Anatomy-WebGL/*.png filter=lfs diff=lfs merge=lfs -text
 Anatomy-WebGL/*.ico filter=lfs diff=lfs merge=lfs -text
 Anatomy-WebGL/*.html filter=lfs diff=lfs merge=lfs -text
+*.glb filter=lfs diff=lfs merge=lfs -text
