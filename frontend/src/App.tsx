@@ -3,6 +3,7 @@ import type {
   ChangeEvent,
   DragEvent as ReactDragEvent,
   FormEvent,
+  KeyboardEvent as ReactKeyboardEvent,
   PointerEvent as ReactPointerEvent,
 } from "react";
 import {
@@ -14,7 +15,11 @@ import {
   useNavigate,
 } from "react-router-dom";
 import anime from "animejs";
+import * as THREE from "three";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import ChatPanel from "./components/ChatPanel";
+import { Button } from "./components/ui/Button";
+import { Input } from "./components/ui/Input";
 import DocsPage from "./pages/DocsPage";
 import FemaleAnatomyPage from "./pages/FemaleAnatomyPage";
 import ReportAnalysis from "./pages/ReportAnalysis";
@@ -469,6 +474,8 @@ const AUTH_BASE: string =
   (import.meta.env.VITE_AUTH_BASE_URL as string) || "http://localhost:9000";
 const Z_ANATOMY_URL: string =
   (import.meta.env.VITE_Z_ANATOMY_URL as string) || "http://localhost:5174";
+const LOGIN_MODEL_URL: string =
+  (import.meta.env.VITE_LOGIN_MODEL_URL as string) || "/models/myology.glb";
 const AUTH_REQUIRED =
   ((import.meta.env.VITE_AUTH_REQUIRED as string) ?? "false") === "true";
 const AUTH_TOKEN_KEY = "medai_auth_token";
@@ -729,6 +736,7 @@ export default function App() {
   const [authNotice, setAuthNotice] = useState<string>("");
   const [authUsername, setAuthUsername] = useState<string>("");
   const [authPassword, setAuthPassword] = useState<string>("");
+  const [isCapsLockOn, setIsCapsLockOn] = useState<boolean>(false);
   const [authStep, setAuthStep] = useState<AuthStep>("login");
   const [forgotIdentifier, setForgotIdentifier] = useState<string>("");
   const [forgotOtp, setForgotOtp] = useState<string>("");
@@ -958,6 +966,8 @@ export default function App() {
   const leftPanelRef = useRef<HTMLDivElement | null>(null);
   const rightPanelRef = useRef<HTMLDivElement | null>(null);
   const loginScreenRef = useRef<HTMLDivElement | null>(null);
+  const loginBrainRef = useRef<HTMLDivElement | null>(null);
+  const loginBrainCleanupRef = useRef<(() => void) | null>(null);
   const slicePrefetchRef = useRef<SliceIndex | null>(null);
   const volumeInfoPathRef = useRef<string>("");
   const volumeInfoRequestRef = useRef<string>("");
@@ -1801,10 +1811,22 @@ export default function App() {
   const showLogin = (AUTH_REQUIRED && authChecked && !authUser) || isAuthRoute;
   const showAuthGate = AUTH_REQUIRED && !authChecked;
   const isAuthFlow = authStep !== "login";
+  const showLoginScene = showLogin || showAuthGate;
   const isForgotFlow =
     authStep === "forgot-request" || authStep === "forgot-verify";
   const isVerifyFlow =
     authStep === "verify-request" || authStep === "verify-confirm";
+
+  const handleCapsLock = useCallback(
+    (event: ReactKeyboardEvent<HTMLInputElement>) => {
+      setIsCapsLockOn(event.getModifierState("CapsLock"));
+    },
+    []
+  );
+
+  const clearCapsLock = useCallback(() => {
+    setIsCapsLockOn(false);
+  }, []);
   const meshSculptEnabled = meshCanSculpt && !meshExplodeEnabled;
   const activePartOffset = meshPartOffsets[meshActiveGroup] ?? 0;
   const hasPartOffsets = Object.keys(meshPartOffsets).length > 0;
@@ -7357,6 +7379,151 @@ export default function App() {
     screen.style.setProperty("--login-glow-y", "50%");
   }, [showLogin]);
 
+  useEffect(() => {
+    if (!showLoginScene) {
+      if (loginBrainCleanupRef.current) {
+        loginBrainCleanupRef.current();
+        loginBrainCleanupRef.current = null;
+      }
+      return;
+    }
+    if (loginBrainCleanupRef.current) return;
+    const container = loginBrainRef.current;
+    if (!container) return;
+
+    const prefersReduced = window.matchMedia(
+      "(prefers-reduced-motion: reduce)"
+    ).matches;
+    const lowPowerDevice = false;
+
+    THREE.Cache.enabled = true;
+    const scene = new THREE.Scene();
+    scene.fog = new THREE.FogExp2(0x000000, 0.12);
+    const camera = new THREE.PerspectiveCamera(35, 1, 0.1, 50);
+    camera.position.set(0, 0.1, 4.2);
+
+    const renderer = new THREE.WebGLRenderer({
+      antialias: true,
+      alpha: true,
+      powerPreference: "high-performance",
+    });
+    renderer.setClearColor(0x000000, 0);
+    const pixelRatio = window.devicePixelRatio || 1;
+    renderer.setPixelRatio(pixelRatio);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    container.appendChild(renderer.domElement);
+
+    const ambient = new THREE.AmbientLight(0xffffff, 0.55);
+    scene.add(ambient);
+    const hemiLight = new THREE.HemisphereLight(0xffffff, 0x202020, 0.45);
+    scene.add(hemiLight);
+    const keyLight = new THREE.DirectionalLight(0xffffff, 1.0);
+    keyLight.position.set(3, 2, 3);
+    scene.add(keyLight);
+
+    const group = new THREE.Group();
+    group.position.y = -1.2;
+    scene.add(group);
+
+    let brainModel: THREE.Object3D | null = null;
+    const loader = new GLTFLoader();
+    loader.load(
+      LOGIN_MODEL_URL,
+      (gltf) => {
+        brainModel = gltf.scene;
+      brainModel.traverse((child) => {
+        if ((child as THREE.Mesh).isMesh) {
+          const mesh = child as THREE.Mesh;
+          mesh.castShadow = false;
+          mesh.receiveShadow = false;
+        }
+      });
+      const box = new THREE.Box3().setFromObject(brainModel);
+        const size = new THREE.Vector3();
+        box.getSize(size);
+        const maxDim = Math.max(size.x, size.y, size.z) || 1;
+        const scale = 2.2 / maxDim;
+        brainModel.scale.setScalar(scale);
+        const center = new THREE.Vector3();
+        box.getCenter(center);
+        brainModel.position.sub(center.multiplyScalar(scale));
+        group.add(brainModel);
+      },
+      undefined,
+      (error) => {
+        console.error("Failed to load brain model", error);
+      }
+    );
+
+    const resize = () => {
+      const width = container.clientWidth || window.innerWidth;
+      const height = container.clientHeight || window.innerHeight;
+      renderer.setSize(width, height);
+      camera.aspect = width / height;
+      camera.updateProjectionMatrix();
+    };
+    resize();
+    window.addEventListener("resize", resize);
+
+    if (!prefersReduced) {
+      anime({
+        targets: group.position,
+        y: 0,
+        duration: 1800,
+        easing: "easeOutExpo",
+      });
+    } else {
+      group.position.y = 0;
+    }
+
+    let raf = 0;
+    const clock = new THREE.Clock();
+    let isVisible = document.visibilityState === "visible";
+    const onVisibility = () => {
+      isVisible = document.visibilityState === "visible";
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    const animate = (time = 0) => {
+      if (!isVisible) {
+        raf = window.requestAnimationFrame(animate);
+        return;
+      }
+      const delta = clock.getDelta();
+      const t = clock.elapsedTime;
+      group.rotation.y += delta * 0.25;
+      group.rotation.x = Math.sin(t * 0.3) * 0.08;
+      renderer.render(scene, camera);
+      raf = window.requestAnimationFrame(animate);
+    };
+    animate();
+
+    loginBrainCleanupRef.current = () => {
+      window.removeEventListener("resize", resize);
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.cancelAnimationFrame(raf);
+      renderer.dispose();
+      if (brainModel) {
+        brainModel.traverse((child) => {
+          if ((child as THREE.Mesh).isMesh) {
+            const mesh = child as THREE.Mesh;
+            if (mesh.geometry) {
+              mesh.geometry.dispose();
+            }
+            const material = mesh.material;
+            if (Array.isArray(material)) {
+              material.forEach((mat) => mat.dispose());
+            } else if (material) {
+              material.dispose();
+            }
+          }
+        });
+      }
+      if (renderer.domElement.parentElement) {
+        renderer.domElement.parentElement.removeChild(renderer.domElement);
+      }
+    };
+  }, [showLoginScene]);
+
   const beginPanelResize = useCallback(
     (panel: PanelId, corner: ResizeCorner) =>
       (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -7884,6 +8051,7 @@ export default function App() {
 
   const loginBackdrop = (
     <div className="login-background" aria-hidden="true">
+      <div className="login-brain" ref={loginBrainRef} />
       <div className="login-orb orb-1" />
       <div className="login-orb orb-2" />
       <div className="login-orb orb-3" />
@@ -7904,7 +8072,6 @@ export default function App() {
         <span className="login-star s9" />
         <span className="login-star s10" />
       </div>
-      <div className="login-scanline" />
       <div className="login-noise" />
       <div className="login-vignette" />
     </div>
@@ -8128,13 +8295,17 @@ export default function App() {
     return (
       <div className="login-screen" ref={loginScreenRef}>
         {loginBackdrop}
-        <div className="login-shell">
-          <div className="login-card login-card-loading">
+        <div className="login-shell login-shell-gate">
+          <div className="login-card login-card-authgate">
             <div className="login-card-glow" aria-hidden="true" />
             <div className="login-card-grid" aria-hidden="true" />
-            <div className="login-spinner" />
-            <h2>Preparing your workspace</h2>
-            <p>Just a moment while we get things ready.</p>
+            <h2>Checking your session</h2>
+            <p>Please wait a second while we verify your access.</p>
+            <div className="login-authgate-dots" aria-hidden="true">
+              <span />
+              <span />
+              <span />
+            </div>
           </div>
         </div>
       </div>
@@ -8147,13 +8318,6 @@ export default function App() {
         {loginBackdrop}
         <div className="login-shell">
           <div className="login-hero">
-            <div className="login-hero-top">
-              <span className="pill">Secure workspace | For care teams</span>
-              <div className="login-status">
-                <span className="login-status-dot" />
-                <span>Ready for today's cases</span>
-              </div>
-            </div>
             <h1 className="login-title">
               Welcome to <span>Corpus Medica</span>
             </h1>
@@ -8171,29 +8335,6 @@ export default function App() {
               </div>
               <div className="login-point">
                 Review results in 2D or 3D.
-              </div>
-            </div>
-            <div className="login-stats">
-              <div className="login-stat-card">
-                <span className="label">Cases today</span>
-                <strong>1,482</strong>
-                <div className="login-stat-foot">Across all workspaces</div>
-              </div>
-              <div className="login-stat-card">
-                <span className="label">Average time</span>
-                <strong>4.6m</strong>
-                <div className="login-signal" aria-hidden="true">
-                  <span className="login-signal-bar" />
-                  <span className="login-signal-bar" />
-                  <span className="login-signal-bar" />
-                  <span className="login-signal-bar" />
-                  <span className="login-signal-bar" />
-                </div>
-              </div>
-              <div className="login-stat-card">
-                <span className="label">Teams connected</span>
-                <strong>99.98%</strong>
-                <div className="login-stat-foot">Available when you need it</div>
               </div>
             </div>
           </div>
@@ -8259,7 +8400,7 @@ export default function App() {
                 <form className="login-form" onSubmit={handleLogin}>
                   <label className="login-field">
                     <span>Username or email</span>
-                    <input
+                    <Input
                       type="text"
                       value={authUsername}
                       onChange={(event) => {
@@ -8270,11 +8411,12 @@ export default function App() {
                       placeholder="dr_singh or dr_singh@clinic.com"
                       autoComplete="username"
                       required
+                      className="login-input"
                     />
                   </label>
                   <label className="login-field">
                     <span>Password</span>
-                    <input
+                    <Input
                       type="password"
                       value={authPassword}
                       onChange={(event) => {
@@ -8282,18 +8424,28 @@ export default function App() {
                         if (authError) setAuthError("");
                         if (authNotice) setAuthNotice("");
                       }}
+                      onKeyUp={handleCapsLock}
+                      onKeyDown={handleCapsLock}
+                      onBlur={clearCapsLock}
                       placeholder="enter your password"
                       autoComplete="current-password"
                       required
+                      className="login-input"
                     />
                   </label>
-                  <button
+                  {isCapsLockOn && (
+                    <div className="login-warning" role="status">
+                      Caps Lock is on.
+                    </div>
+                  )}
+                  <Button
                     type="submit"
-                    className="btn btn-accent btn-block"
+                    variant="accent"
+                    className="btn-block"
                     disabled={authLoading}
                   >
                     {authLoading ? "Signing in..." : "Sign in"}
-                  </button>
+                  </Button>
                 </form>
                 <div className="login-links">
                   <button
@@ -8321,7 +8473,7 @@ export default function App() {
                 <form className="login-form" onSubmit={handleForgotRequest}>
                   <label className="login-field">
                     <span>Email or username</span>
-                    <input
+                    <Input
                       type="text"
                       value={forgotIdentifier}
                       onChange={(event) => {
@@ -8332,15 +8484,17 @@ export default function App() {
                       placeholder="name@hospital.org or dr_singh"
                       autoComplete="email"
                       required
+                      className="login-input"
                     />
                   </label>
-                  <button
+                  <Button
                     type="submit"
-                    className="btn btn-accent btn-block"
+                    variant="accent"
+                    className="btn-block"
                     disabled={forgotLoading}
                   >
                     {forgotLoading ? "Sending code..." : "Send code"}
-                  </button>
+                  </Button>
                 </form>
                 <div className="login-links">
                   <button
@@ -8359,7 +8513,7 @@ export default function App() {
                 <form className="login-form" onSubmit={handleForgotReset}>
                   <label className="login-field">
                     <span>Email or username</span>
-                    <input
+                    <Input
                       type="text"
                       value={forgotIdentifier}
                       onChange={(event) => {
@@ -8370,11 +8524,12 @@ export default function App() {
                       placeholder="name@hospital.org or dr_singh"
                       autoComplete="email"
                       required
+                      className="login-input"
                     />
                   </label>
                   <label className="login-field">
                     <span>Verification code</span>
-                    <input
+                    <Input
                       type="text"
                       inputMode="numeric"
                       value={forgotOtp}
@@ -8385,25 +8540,35 @@ export default function App() {
                       placeholder="6-digit code"
                       autoComplete="one-time-code"
                       required
+                      className="login-input"
                     />
                   </label>
                   <label className="login-field">
                     <span>New password</span>
-                    <input
+                    <Input
                       type="password"
                       value={forgotPassword}
                       onChange={(event) => {
                         setForgotPassword(event.target.value);
                         if (forgotError) setForgotError("");
                       }}
+                      onKeyUp={handleCapsLock}
+                      onKeyDown={handleCapsLock}
+                      onBlur={clearCapsLock}
                       placeholder="Create a new password"
                       autoComplete="new-password"
                       required
+                      className="login-input"
                     />
                   </label>
+                  {isCapsLockOn && (
+                    <div className="login-warning" role="status">
+                      Caps Lock is on.
+                    </div>
+                  )}
                   <label className="login-field">
                     <span>Confirm password</span>
-                    <input
+                    <Input
                       type="password"
                       value={forgotConfirm}
                       onChange={(event) => {
@@ -8413,15 +8578,17 @@ export default function App() {
                       placeholder="Repeat your password"
                       autoComplete="new-password"
                       required
+                      className="login-input"
                     />
                   </label>
-                  <button
+                  <Button
                     type="submit"
-                    className="btn btn-accent btn-block"
+                    variant="accent"
+                    className="btn-block"
                     disabled={forgotLoading}
                   >
                     {forgotLoading ? "Resetting..." : "Reset password"}
-                  </button>
+                  </Button>
                 </form>
                 <div className="login-links">
                   <button
@@ -8448,7 +8615,7 @@ export default function App() {
                 <form className="login-form" onSubmit={handleVerifyRequest}>
                   <label className="login-field">
                     <span>Email or username</span>
-                    <input
+                    <Input
                       type="text"
                       value={verifyIdentifier}
                       onChange={(event) => {
@@ -8459,15 +8626,17 @@ export default function App() {
                       placeholder="name@hospital.org or dr_singh"
                       autoComplete="email"
                       required
+                      className="login-input"
                     />
                   </label>
-                  <button
+                  <Button
                     type="submit"
-                    className="btn btn-accent btn-block"
+                    variant="accent"
+                    className="btn-block"
                     disabled={verifyLoading}
                   >
                     {verifyLoading ? "Sending code..." : "Send code"}
-                  </button>
+                  </Button>
                 </form>
                 <div className="login-links">
                   <button
@@ -8486,7 +8655,7 @@ export default function App() {
                 <form className="login-form" onSubmit={handleVerifyConfirm}>
                   <label className="login-field">
                     <span>Email or username</span>
-                    <input
+                    <Input
                       type="text"
                       value={verifyIdentifier}
                       onChange={(event) => {
@@ -8497,11 +8666,12 @@ export default function App() {
                       placeholder="name@hospital.org or dr_singh"
                       autoComplete="email"
                       required
+                      className="login-input"
                     />
                   </label>
                   <label className="login-field">
                     <span>Verification code</span>
-                    <input
+                    <Input
                       type="text"
                       inputMode="numeric"
                       value={verifyOtp}
@@ -8512,15 +8682,17 @@ export default function App() {
                       placeholder="6-digit code"
                       autoComplete="one-time-code"
                       required
+                      className="login-input"
                     />
                   </label>
-                  <button
+                  <Button
                     type="submit"
-                    className="btn btn-accent btn-block"
+                    variant="accent"
+                    className="btn-block"
                     disabled={verifyLoading}
                   >
                     {verifyLoading ? "Verifying..." : "Verify email"}
-                  </button>
+                  </Button>
                 </form>
                 <div className="login-links">
                   <button
