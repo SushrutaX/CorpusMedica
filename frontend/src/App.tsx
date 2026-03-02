@@ -3,6 +3,7 @@ import type {
   ChangeEvent,
   DragEvent as ReactDragEvent,
   FormEvent,
+  KeyboardEvent as ReactKeyboardEvent,
   PointerEvent as ReactPointerEvent,
 } from "react";
 import {
@@ -14,10 +15,15 @@ import {
   useNavigate,
 } from "react-router-dom";
 import anime from "animejs";
+import * as THREE from "three";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import ChatPanel from "./components/ChatPanel";
+import { Button } from "./components/ui/Button";
+import { Input } from "./components/ui/Input";
 import DocsPage from "./pages/DocsPage";
-import DevPage from "./pages/devPage";
+import FemaleAnatomyPage from "./pages/FemaleAnatomyPage";
 import ReportAnalysis from "./pages/ReportAnalysis";
+import DevPage from "./pages/DevPage";
 import WorkspacePage from "./pages/WorkspacePage";
 
 type Model = {
@@ -285,6 +291,7 @@ type MeshOverlayVolume = {
   dataRange: [number, number];
   dimensions: [number, number, number];
   spacing: [number, number, number];
+  origin?: [number, number, number];
   materialPreset: OverlayMaterialPreset;
   opacity: number;
   visible: boolean;
@@ -465,6 +472,10 @@ const API_BASE: string =
   (import.meta.env.VITE_API_BASE_URL as string) || "http://localhost:8000";
 const AUTH_BASE: string =
   (import.meta.env.VITE_AUTH_BASE_URL as string) || "http://localhost:9000";
+const Z_ANATOMY_URL: string =
+  (import.meta.env.VITE_Z_ANATOMY_URL as string) || "http://localhost:5174";
+const LOGIN_MODEL_URL: string =
+  (import.meta.env.VITE_LOGIN_MODEL_URL as string) || "/models/myology.glb";
 const AUTH_REQUIRED =
   ((import.meta.env.VITE_AUTH_REQUIRED as string) ?? "false") === "true";
 const AUTH_TOKEN_KEY = "medai_auth_token";
@@ -725,6 +736,7 @@ export default function App() {
   const [authNotice, setAuthNotice] = useState<string>("");
   const [authUsername, setAuthUsername] = useState<string>("");
   const [authPassword, setAuthPassword] = useState<string>("");
+  const [isCapsLockOn, setIsCapsLockOn] = useState<boolean>(false);
   const [authStep, setAuthStep] = useState<AuthStep>("login");
   const [forgotIdentifier, setForgotIdentifier] = useState<string>("");
   const [forgotOtp, setForgotOtp] = useState<string>("");
@@ -742,6 +754,7 @@ export default function App() {
   const [uploadResult, setUploadResult] = useState<UploadResponse | null>(null);
   const [uploading, setUploading] = useState<boolean>(false);
   const [uploadPreview, setUploadPreview] = useState<UploadPreview | null>(null);
+  const [uploadDropActive, setUploadDropActive] = useState<boolean>(false);
   const [previewPath, setPreviewPath] = useState<string>("");
   const [volumeInfo, setVolumeInfo] = useState<VolumeInfo | null>(null);
   const [viewerLoading, setViewerLoading] = useState<boolean>(false);
@@ -953,6 +966,8 @@ export default function App() {
   const leftPanelRef = useRef<HTMLDivElement | null>(null);
   const rightPanelRef = useRef<HTMLDivElement | null>(null);
   const loginScreenRef = useRef<HTMLDivElement | null>(null);
+  const loginBrainRef = useRef<HTMLDivElement | null>(null);
+  const loginBrainCleanupRef = useRef<(() => void) | null>(null);
   const slicePrefetchRef = useRef<SliceIndex | null>(null);
   const volumeInfoPathRef = useRef<string>("");
   const volumeInfoRequestRef = useRef<string>("");
@@ -1176,7 +1191,9 @@ export default function App() {
           const clipValue =
             typeof item.clipValue === "number"
               ? Math.max(0, Math.min(item.clipValue, 1))
-              : 0.5;
+              : 0;
+          const normalizedClipValue =
+            !clipEnabled && clipValue === 0.5 ? 0 : clipValue;
           const explodeEnabled =
             typeof item.explodeEnabled === "boolean" ? item.explodeEnabled : false;
           const explodeDistance =
@@ -1204,7 +1221,7 @@ export default function App() {
             rotation: rotation as [number, number, number],
             clipEnabled,
             clipAxis,
-            clipValue,
+            clipValue: normalizedClipValue,
             explodeEnabled,
             explodeDistance,
           } as MeshOverlayItem;
@@ -1783,6 +1800,7 @@ export default function App() {
   const authRoleLabel = authUser?.role || "";
   const isAuthRoute = location.pathname.startsWith("/login");
   const isDocsRoute = location.pathname.startsWith("/docs");
+  const isAnatomyRoute = location.pathname === "/anatomy";
   const authStepToPath: Record<AuthStep, string> = {
     login: "/login",
     "forgot-request": "/login/forgot",
@@ -1793,10 +1811,22 @@ export default function App() {
   const showLogin = (AUTH_REQUIRED && authChecked && !authUser) || isAuthRoute;
   const showAuthGate = AUTH_REQUIRED && !authChecked;
   const isAuthFlow = authStep !== "login";
+  const showLoginScene = showLogin || showAuthGate;
   const isForgotFlow =
     authStep === "forgot-request" || authStep === "forgot-verify";
   const isVerifyFlow =
     authStep === "verify-request" || authStep === "verify-confirm";
+
+  const handleCapsLock = useCallback(
+    (event: ReactKeyboardEvent<HTMLInputElement>) => {
+      setIsCapsLockOn(event.getModifierState("CapsLock"));
+    },
+    []
+  );
+
+  const clearCapsLock = useCallback(() => {
+    setIsCapsLockOn(false);
+  }, []);
   const meshSculptEnabled = meshCanSculpt && !meshExplodeEnabled;
   const activePartOffset = meshPartOffsets[meshActiveGroup] ?? 0;
   const hasPartOffsets = Object.keys(meshPartOffsets).length > 0;
@@ -1820,7 +1850,7 @@ export default function App() {
   }, [meshTool, meshExplodeEnabled]);
 
   useEffect(() => {
-    const shouldLock = showLogin || isWorkspace;
+    const shouldLock = showLogin || isWorkspace || isAnatomyRoute;
     if (shouldLock) {
       document.body.style.overflow = "hidden";
       document.body.style.height = "100vh";
@@ -1832,7 +1862,7 @@ export default function App() {
       document.body.style.overflow = "";
       document.body.style.height = "";
     };
-  }, [isWorkspace, showLogin]);
+  }, [isWorkspace, showLogin, isAnatomyRoute]);
 
   useEffect(() => {
     if (!isWorkspace) return;
@@ -2463,21 +2493,46 @@ export default function App() {
       const vtkPlane = vtkPlaneRef.current;
       if (!vtkPlane) return;
       const plane = overlay.clipPlane ?? vtkPlane.newInstance();
-      const [dx, dy, dz] = overlay.dimensions;
-      const [sx, sy, sz] = overlay.spacing;
-      const maxX = dx * sx;
-      const maxY = dy * sy;
-      const maxZ = dz * sz;
+      let minX = 0;
+      let maxX = 0;
+      let minY = 0;
+      let maxY = 0;
+      let minZ = 0;
+      let maxZ = 0;
+      if (typeof overlay.volume?.getBounds === "function") {
+        const bounds = overlay.volume.getBounds();
+        if (Array.isArray(bounds) && bounds.length >= 6) {
+          [minX, maxX, minY, maxY, minZ, maxZ] = bounds;
+        }
+      }
+      if (minX === maxX && minY === maxY && minZ === maxZ) {
+        const [dx, dy, dz] = overlay.dimensions;
+        const [sx, sy, sz] = overlay.spacing;
+        const sizeX = dx * sx;
+        const sizeY = dy * sy;
+        const sizeZ = dz * sz;
+        const origin = overlay.origin ?? [
+          -sizeX / 2,
+          -sizeY / 2,
+          -sizeZ / 2,
+        ];
+        minX = origin[0];
+        minY = origin[1];
+        minZ = origin[2];
+        maxX = minX + sizeX;
+        maxY = minY + sizeY;
+        maxZ = minZ + sizeZ;
+      }
       const value = Math.max(0, Math.min(item.clipValue ?? 0.5, 1));
       if (item.clipAxis === "x") {
         plane.setNormal(1, 0, 0);
-        plane.setOrigin(maxX * value, 0, 0);
+        plane.setOrigin(minX + (maxX - minX) * value, minY, minZ);
       } else if (item.clipAxis === "y") {
         plane.setNormal(0, 1, 0);
-        plane.setOrigin(0, maxY * value, 0);
+        plane.setOrigin(minX, minY + (maxY - minY) * value, minZ);
       } else {
         plane.setNormal(0, 0, 1);
-        plane.setOrigin(0, 0, maxZ * value);
+        plane.setOrigin(minX, minY, minZ + (maxZ - minZ) * value);
       }
       if (typeof overlay.mapper?.addClippingPlane === "function") {
         overlay.mapper.addClippingPlane(plane);
@@ -4086,11 +4141,12 @@ export default function App() {
               const imageData = vtkImageData.newInstance();
               imageData.setDimensions(dimensions);
               imageData.setSpacing(spacing);
-              imageData.setOrigin([
+              const origin: [number, number, number] = [
                 -(dimensions[0] * spacing[0]) / 2,
                 -(dimensions[1] * spacing[1]) / 2,
                 -(dimensions[2] * spacing[2]) / 2,
-              ]);
+              ];
+              imageData.setOrigin(origin);
               const scalars = vtkDataArray.newInstance({
                 name: "Scalars",
                 numberOfComponents: 1,
@@ -4098,7 +4154,7 @@ export default function App() {
               });
               imageData.getPointData().setScalars(scalars);
               const dataRange = scalars.getRange();
-              return { imageData, dataRange, dimensions, spacing };
+              return { imageData, dataRange, dimensions, spacing, origin };
             };
 
             const createOverlayVolume = async (item: MeshOverlayItem) => {
@@ -4155,6 +4211,7 @@ export default function App() {
                 dataRange: parsed.dataRange,
                 dimensions: parsed.dimensions,
                 spacing: parsed.spacing,
+                origin: parsed.origin,
                 materialPreset: item.materialPreset ?? "brain",
                 opacity: item.opacity,
                 visible: item.visible,
@@ -4163,7 +4220,7 @@ export default function App() {
                 rotation: item.rotation ?? [0, 0, 0],
                 clipEnabled: item.clipEnabled ?? false,
                 clipAxis: item.clipAxis ?? "z",
-                clipValue: item.clipValue ?? 0.5,
+                clipValue: item.clipValue ?? 0,
                 clipPlane: null,
                 explodeEnabled: item.explodeEnabled ?? false,
                 explodeDistance: item.explodeDistance ?? 0.25,
@@ -5929,21 +5986,41 @@ export default function App() {
       const vtkPlane = vtkPlaneRef.current;
       if (!vtkPlane) return;
       const plane = state.clipPlane ?? vtkPlane.newInstance();
-      const [dx, dy, dz] = state.dimensions;
-      const [sx, sy, sz] = state.spacing;
-      const maxX = dx * sx;
-      const maxY = dy * sy;
-      const maxZ = dz * sz;
+      let minX = 0;
+      let maxX = 0;
+      let minY = 0;
+      let maxY = 0;
+      let minZ = 0;
+      let maxZ = 0;
+      if (typeof state.volume?.getBounds === "function") {
+        const bounds = state.volume.getBounds();
+        if (Array.isArray(bounds) && bounds.length >= 6) {
+          [minX, maxX, minY, maxY, minZ, maxZ] = bounds;
+        }
+      }
+      if (minX === maxX && minY === maxY && minZ === maxZ) {
+        const [dx, dy, dz] = state.dimensions;
+        const [sx, sy, sz] = state.spacing;
+        const sizeX = dx * sx;
+        const sizeY = dy * sy;
+        const sizeZ = dz * sz;
+        minX = -sizeX / 2;
+        minY = -sizeY / 2;
+        minZ = -sizeZ / 2;
+        maxX = minX + sizeX;
+        maxY = minY + sizeY;
+        maxZ = minZ + sizeZ;
+      }
       const value = Math.max(0, Math.min(clipValue, 1));
       if (clipAxis === "x") {
         plane.setNormal(1, 0, 0);
-        plane.setOrigin(maxX * value, 0, 0);
+        plane.setOrigin(minX + (maxX - minX) * value, minY, minZ);
       } else if (clipAxis === "y") {
         plane.setNormal(0, 1, 0);
-        plane.setOrigin(0, maxY * value, 0);
+        plane.setOrigin(minX, minY + (maxY - minY) * value, minZ);
       } else {
         plane.setNormal(0, 0, 1);
-        plane.setOrigin(0, 0, maxZ * value);
+        plane.setOrigin(minX, minY, minZ + (maxZ - minZ) * value);
       }
       state.volumeMapper.addClippingPlane(plane);
       state.clipPlane = plane;
@@ -6033,9 +6110,51 @@ export default function App() {
     const lower = name.toLowerCase();
     if (lower.endsWith(".nii") || lower.endsWith(".nii.gz")) return "nifti";
     if (lower.endsWith(".dcm")) return "dicom";
+    if (lower.endsWith(".dicom")) return "dicom";
     if (lower.endsWith(".zip")) return "zip";
     return "unknown";
   };
+
+  const MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024;
+  const normalizeSelectedFiles = useCallback((selected: File[]) => {
+    const seen = new Set<string>();
+    const accepted: File[] = [];
+    const ignoredEmpty: string[] = [];
+    const ignoredLarge: string[] = [];
+    const ignoredUnknown: string[] = [];
+    const ignoredDuplicates: string[] = [];
+
+    selected.forEach((file) => {
+      const key = `${file.name}::${file.size}::${file.lastModified}`;
+      if (seen.has(key)) {
+        ignoredDuplicates.push(file.name);
+        return;
+      }
+      seen.add(key);
+      if (file.size === 0) {
+        ignoredEmpty.push(file.name);
+        return;
+      }
+      if (file.size > MAX_UPLOAD_BYTES) {
+        ignoredLarge.push(file.name);
+        return;
+      }
+      const kind = inferFileKind(file.name);
+      if (kind === "unknown") {
+        ignoredUnknown.push(file.name);
+        return;
+      }
+      accepted.push(file);
+    });
+
+    return {
+      accepted,
+      ignoredEmpty,
+      ignoredLarge,
+      ignoredUnknown,
+      ignoredDuplicates,
+    };
+  }, []);
 
   const selectedFileCount = files.length;
   const selectedFileNames = files.map((item) => item.name);
@@ -6126,7 +6245,14 @@ export default function App() {
 
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
     const selected = Array.from(event.target.files ?? []);
-    setFiles(selected);
+    const {
+      accepted,
+      ignoredEmpty,
+      ignoredLarge,
+      ignoredUnknown,
+      ignoredDuplicates,
+    } = normalizeSelectedFiles(selected);
+    setFiles(accepted);
     setViewerError("");
     setError("");
     if (!isWorkspace) {
@@ -6141,8 +6267,99 @@ export default function App() {
       }
     }
     if (selected.length > 0) {
+      if (ignoredEmpty.length > 0) {
+        pushNotice(
+          "error",
+          "Empty files ignored",
+          `${ignoredEmpty.length} file(s) were empty and skipped.`
+        );
+      }
+      if (ignoredLarge.length > 0) {
+        pushNotice(
+          "error",
+          "Files too large",
+          `${ignoredLarge.length} file(s) exceeded the 2GB limit and were skipped.`
+        );
+      }
+      if (ignoredUnknown.length > 0) {
+        pushNotice(
+          "error",
+          "Unsupported files",
+          `${ignoredUnknown.length} file(s) had unsupported extensions.`
+        );
+      }
+      if (ignoredDuplicates.length > 0) {
+        pushNotice(
+          "info",
+          "Duplicates skipped",
+          `${ignoredDuplicates.length} duplicate file(s) were ignored.`
+        );
+      }
+      if (accepted.length > 0) {
+        const name =
+          accepted.length === 1 ? accepted[0].name : `${accepted.length} files`;
+        pushNotice("info", "Scan selected", `${name} ready to upload.`);
+      }
+    }
+    event.currentTarget.value = "";
+  };
+
+  const handleUploadDrop = (event: ReactDragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    setUploadDropActive(false);
+    const dropped = Array.from(event.dataTransfer.files ?? []);
+    const {
+      accepted,
+      ignoredEmpty,
+      ignoredLarge,
+      ignoredUnknown,
+      ignoredDuplicates,
+    } = normalizeSelectedFiles(dropped);
+    setFiles(accepted);
+    setViewerError("");
+    setError("");
+    if (!isWorkspace) {
+      setUploadResult(null);
+      setUploadPreview(null);
+      setVolumeInfo(null);
+      setJobId("");
+      setJobStatus(null);
+      setJobResult(null);
+      if (workspacePath) {
+        setWorkspacePath("");
+      }
+    }
+    if (ignoredEmpty.length > 0) {
+      pushNotice(
+        "error",
+        "Empty files ignored",
+        `${ignoredEmpty.length} file(s) were empty and skipped.`
+      );
+    }
+    if (ignoredLarge.length > 0) {
+      pushNotice(
+        "error",
+        "Files too large",
+        `${ignoredLarge.length} file(s) exceeded the 2GB limit and were skipped.`
+      );
+    }
+    if (ignoredUnknown.length > 0) {
+      pushNotice(
+        "error",
+        "Unsupported files",
+        `${ignoredUnknown.length} file(s) had unsupported extensions.`
+      );
+    }
+    if (ignoredDuplicates.length > 0) {
+      pushNotice(
+        "info",
+        "Duplicates skipped",
+        `${ignoredDuplicates.length} duplicate file(s) were ignored.`
+      );
+    }
+    if (accepted.length > 0) {
       const name =
-        selected.length === 1 ? selected[0].name : `${selected.length} files`;
+        accepted.length === 1 ? accepted[0].name : `${accepted.length} files`;
       pushNotice("info", "Scan selected", `${name} ready to upload.`);
     }
   };
@@ -6231,7 +6448,7 @@ export default function App() {
           rotation: [0, 0, 0],
           clipEnabled: false,
           clipAxis: "z",
-          clipValue: 0.5,
+          clipValue: 0,
           explodeEnabled: false,
           explodeDistance: 0.25,
         });
@@ -6363,7 +6580,7 @@ export default function App() {
         rotation: [0, 0, 0],
         clipEnabled: false,
         clipAxis: "z",
-        clipValue: 0.5,
+        clipValue: 0,
         explodeEnabled: false,
         explodeDistance: 0.25,
       };
@@ -7162,6 +7379,151 @@ export default function App() {
     screen.style.setProperty("--login-glow-y", "50%");
   }, [showLogin]);
 
+  useEffect(() => {
+    if (!showLoginScene) {
+      if (loginBrainCleanupRef.current) {
+        loginBrainCleanupRef.current();
+        loginBrainCleanupRef.current = null;
+      }
+      return;
+    }
+    if (loginBrainCleanupRef.current) return;
+    const container = loginBrainRef.current;
+    if (!container) return;
+
+    const prefersReduced = window.matchMedia(
+      "(prefers-reduced-motion: reduce)"
+    ).matches;
+    const lowPowerDevice = false;
+
+    THREE.Cache.enabled = true;
+    const scene = new THREE.Scene();
+    scene.fog = new THREE.FogExp2(0x000000, 0.12);
+    const camera = new THREE.PerspectiveCamera(35, 1, 0.1, 50);
+    camera.position.set(0, 0.1, 4.2);
+
+    const renderer = new THREE.WebGLRenderer({
+      antialias: true,
+      alpha: true,
+      powerPreference: "high-performance",
+    });
+    renderer.setClearColor(0x000000, 0);
+    const pixelRatio = window.devicePixelRatio || 1;
+    renderer.setPixelRatio(pixelRatio);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    container.appendChild(renderer.domElement);
+
+    const ambient = new THREE.AmbientLight(0xffffff, 0.55);
+    scene.add(ambient);
+    const hemiLight = new THREE.HemisphereLight(0xffffff, 0x202020, 0.45);
+    scene.add(hemiLight);
+    const keyLight = new THREE.DirectionalLight(0xffffff, 1.0);
+    keyLight.position.set(3, 2, 3);
+    scene.add(keyLight);
+
+    const group = new THREE.Group();
+    group.position.y = -1.2;
+    scene.add(group);
+
+    let brainModel: THREE.Object3D | null = null;
+    const loader = new GLTFLoader();
+    loader.load(
+      LOGIN_MODEL_URL,
+      (gltf) => {
+        brainModel = gltf.scene;
+      brainModel.traverse((child) => {
+        if ((child as THREE.Mesh).isMesh) {
+          const mesh = child as THREE.Mesh;
+          mesh.castShadow = false;
+          mesh.receiveShadow = false;
+        }
+      });
+      const box = new THREE.Box3().setFromObject(brainModel);
+        const size = new THREE.Vector3();
+        box.getSize(size);
+        const maxDim = Math.max(size.x, size.y, size.z) || 1;
+        const scale = 2.2 / maxDim;
+        brainModel.scale.setScalar(scale);
+        const center = new THREE.Vector3();
+        box.getCenter(center);
+        brainModel.position.sub(center.multiplyScalar(scale));
+        group.add(brainModel);
+      },
+      undefined,
+      (error) => {
+        console.error("Failed to load brain model", error);
+      }
+    );
+
+    const resize = () => {
+      const width = container.clientWidth || window.innerWidth;
+      const height = container.clientHeight || window.innerHeight;
+      renderer.setSize(width, height);
+      camera.aspect = width / height;
+      camera.updateProjectionMatrix();
+    };
+    resize();
+    window.addEventListener("resize", resize);
+
+    if (!prefersReduced) {
+      anime({
+        targets: group.position,
+        y: 0,
+        duration: 1800,
+        easing: "easeOutExpo",
+      });
+    } else {
+      group.position.y = 0;
+    }
+
+    let raf = 0;
+    const clock = new THREE.Clock();
+    let isVisible = document.visibilityState === "visible";
+    const onVisibility = () => {
+      isVisible = document.visibilityState === "visible";
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    const animate = (time = 0) => {
+      if (!isVisible) {
+        raf = window.requestAnimationFrame(animate);
+        return;
+      }
+      const delta = clock.getDelta();
+      const t = clock.elapsedTime;
+      group.rotation.y += delta * 0.25;
+      group.rotation.x = Math.sin(t * 0.3) * 0.08;
+      renderer.render(scene, camera);
+      raf = window.requestAnimationFrame(animate);
+    };
+    animate();
+
+    loginBrainCleanupRef.current = () => {
+      window.removeEventListener("resize", resize);
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.cancelAnimationFrame(raf);
+      renderer.dispose();
+      if (brainModel) {
+        brainModel.traverse((child) => {
+          if ((child as THREE.Mesh).isMesh) {
+            const mesh = child as THREE.Mesh;
+            if (mesh.geometry) {
+              mesh.geometry.dispose();
+            }
+            const material = mesh.material;
+            if (Array.isArray(material)) {
+              material.forEach((mat) => mat.dispose());
+            } else if (material) {
+              material.dispose();
+            }
+          }
+        });
+      }
+      if (renderer.domElement.parentElement) {
+        renderer.domElement.parentElement.removeChild(renderer.domElement);
+      }
+    };
+  }, [showLoginScene]);
+
   const beginPanelResize = useCallback(
     (panel: PanelId, corner: ResizeCorner) =>
       (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -7689,6 +8051,7 @@ export default function App() {
 
   const loginBackdrop = (
     <div className="login-background" aria-hidden="true">
+      <div className="login-brain" ref={loginBrainRef} />
       <div className="login-orb orb-1" />
       <div className="login-orb orb-2" />
       <div className="login-orb orb-3" />
@@ -7709,13 +8072,14 @@ export default function App() {
         <span className="login-star s9" />
         <span className="login-star s10" />
       </div>
-      <div className="login-scanline" />
       <div className="login-noise" />
       <div className="login-vignette" />
     </div>
   );
 
   const docsPage = <DocsPage />;
+  const anatomyPage = <FemaleAnatomyPage />;
+  const reportPage = <ReportAnalysis />;
 
   const workspacePage = (
     <WorkspacePage
@@ -7931,13 +8295,17 @@ export default function App() {
     return (
       <div className="login-screen" ref={loginScreenRef}>
         {loginBackdrop}
-        <div className="login-shell">
-          <div className="login-card login-card-loading">
+        <div className="login-shell login-shell-gate">
+          <div className="login-card login-card-authgate">
             <div className="login-card-glow" aria-hidden="true" />
             <div className="login-card-grid" aria-hidden="true" />
-            <div className="login-spinner" />
-            <h2>Preparing your workspace</h2>
-            <p>Just a moment while we get things ready.</p>
+            <h2>Checking your session</h2>
+            <p>Please wait a second while we verify your access.</p>
+            <div className="login-authgate-dots" aria-hidden="true">
+              <span />
+              <span />
+              <span />
+            </div>
           </div>
         </div>
       </div>
@@ -7950,13 +8318,6 @@ export default function App() {
         {loginBackdrop}
         <div className="login-shell">
           <div className="login-hero">
-            <div className="login-hero-top">
-              <span className="pill">Secure workspace | For care teams</span>
-              <div className="login-status">
-                <span className="login-status-dot" />
-                <span>Ready for today's cases</span>
-              </div>
-            </div>
             <h1 className="login-title">
               Welcome to <span>Corpus Medica</span>
             </h1>
@@ -7974,29 +8335,6 @@ export default function App() {
               </div>
               <div className="login-point">
                 Review results in 2D or 3D.
-              </div>
-            </div>
-            <div className="login-stats">
-              <div className="login-stat-card">
-                <span className="label">Cases today</span>
-                <strong>1,482</strong>
-                <div className="login-stat-foot">Across all workspaces</div>
-              </div>
-              <div className="login-stat-card">
-                <span className="label">Average time</span>
-                <strong>4.6m</strong>
-                <div className="login-signal" aria-hidden="true">
-                  <span className="login-signal-bar" />
-                  <span className="login-signal-bar" />
-                  <span className="login-signal-bar" />
-                  <span className="login-signal-bar" />
-                  <span className="login-signal-bar" />
-                </div>
-              </div>
-              <div className="login-stat-card">
-                <span className="label">Teams connected</span>
-                <strong>99.98%</strong>
-                <div className="login-stat-foot">Available when you need it</div>
               </div>
             </div>
           </div>
@@ -8062,7 +8400,7 @@ export default function App() {
                 <form className="login-form" onSubmit={handleLogin}>
                   <label className="login-field">
                     <span>Username or email</span>
-                    <input
+                    <Input
                       type="text"
                       value={authUsername}
                       onChange={(event) => {
@@ -8073,11 +8411,12 @@ export default function App() {
                       placeholder="dr_singh or dr_singh@clinic.com"
                       autoComplete="username"
                       required
+                      className="login-input"
                     />
                   </label>
                   <label className="login-field">
                     <span>Password</span>
-                    <input
+                    <Input
                       type="password"
                       value={authPassword}
                       onChange={(event) => {
@@ -8085,18 +8424,28 @@ export default function App() {
                         if (authError) setAuthError("");
                         if (authNotice) setAuthNotice("");
                       }}
+                      onKeyUp={handleCapsLock}
+                      onKeyDown={handleCapsLock}
+                      onBlur={clearCapsLock}
                       placeholder="enter your password"
                       autoComplete="current-password"
                       required
+                      className="login-input"
                     />
                   </label>
-                  <button
+                  {isCapsLockOn && (
+                    <div className="login-warning" role="status">
+                      Caps Lock is on.
+                    </div>
+                  )}
+                  <Button
                     type="submit"
-                    className="btn btn-accent btn-block"
+                    variant="accent"
+                    className="btn-block"
                     disabled={authLoading}
                   >
                     {authLoading ? "Signing in..." : "Sign in"}
-                  </button>
+                  </Button>
                 </form>
                 <div className="login-links">
                   <button
@@ -8124,7 +8473,7 @@ export default function App() {
                 <form className="login-form" onSubmit={handleForgotRequest}>
                   <label className="login-field">
                     <span>Email or username</span>
-                    <input
+                    <Input
                       type="text"
                       value={forgotIdentifier}
                       onChange={(event) => {
@@ -8135,15 +8484,17 @@ export default function App() {
                       placeholder="name@hospital.org or dr_singh"
                       autoComplete="email"
                       required
+                      className="login-input"
                     />
                   </label>
-                  <button
+                  <Button
                     type="submit"
-                    className="btn btn-accent btn-block"
+                    variant="accent"
+                    className="btn-block"
                     disabled={forgotLoading}
                   >
                     {forgotLoading ? "Sending code..." : "Send code"}
-                  </button>
+                  </Button>
                 </form>
                 <div className="login-links">
                   <button
@@ -8162,7 +8513,7 @@ export default function App() {
                 <form className="login-form" onSubmit={handleForgotReset}>
                   <label className="login-field">
                     <span>Email or username</span>
-                    <input
+                    <Input
                       type="text"
                       value={forgotIdentifier}
                       onChange={(event) => {
@@ -8173,11 +8524,12 @@ export default function App() {
                       placeholder="name@hospital.org or dr_singh"
                       autoComplete="email"
                       required
+                      className="login-input"
                     />
                   </label>
                   <label className="login-field">
                     <span>Verification code</span>
-                    <input
+                    <Input
                       type="text"
                       inputMode="numeric"
                       value={forgotOtp}
@@ -8188,25 +8540,35 @@ export default function App() {
                       placeholder="6-digit code"
                       autoComplete="one-time-code"
                       required
+                      className="login-input"
                     />
                   </label>
                   <label className="login-field">
                     <span>New password</span>
-                    <input
+                    <Input
                       type="password"
                       value={forgotPassword}
                       onChange={(event) => {
                         setForgotPassword(event.target.value);
                         if (forgotError) setForgotError("");
                       }}
+                      onKeyUp={handleCapsLock}
+                      onKeyDown={handleCapsLock}
+                      onBlur={clearCapsLock}
                       placeholder="Create a new password"
                       autoComplete="new-password"
                       required
+                      className="login-input"
                     />
                   </label>
+                  {isCapsLockOn && (
+                    <div className="login-warning" role="status">
+                      Caps Lock is on.
+                    </div>
+                  )}
                   <label className="login-field">
                     <span>Confirm password</span>
-                    <input
+                    <Input
                       type="password"
                       value={forgotConfirm}
                       onChange={(event) => {
@@ -8216,15 +8578,17 @@ export default function App() {
                       placeholder="Repeat your password"
                       autoComplete="new-password"
                       required
+                      className="login-input"
                     />
                   </label>
-                  <button
+                  <Button
                     type="submit"
-                    className="btn btn-accent btn-block"
+                    variant="accent"
+                    className="btn-block"
                     disabled={forgotLoading}
                   >
                     {forgotLoading ? "Resetting..." : "Reset password"}
-                  </button>
+                  </Button>
                 </form>
                 <div className="login-links">
                   <button
@@ -8251,7 +8615,7 @@ export default function App() {
                 <form className="login-form" onSubmit={handleVerifyRequest}>
                   <label className="login-field">
                     <span>Email or username</span>
-                    <input
+                    <Input
                       type="text"
                       value={verifyIdentifier}
                       onChange={(event) => {
@@ -8262,15 +8626,17 @@ export default function App() {
                       placeholder="name@hospital.org or dr_singh"
                       autoComplete="email"
                       required
+                      className="login-input"
                     />
                   </label>
-                  <button
+                  <Button
                     type="submit"
-                    className="btn btn-accent btn-block"
+                    variant="accent"
+                    className="btn-block"
                     disabled={verifyLoading}
                   >
                     {verifyLoading ? "Sending code..." : "Send code"}
-                  </button>
+                  </Button>
                 </form>
                 <div className="login-links">
                   <button
@@ -8289,7 +8655,7 @@ export default function App() {
                 <form className="login-form" onSubmit={handleVerifyConfirm}>
                   <label className="login-field">
                     <span>Email or username</span>
-                    <input
+                    <Input
                       type="text"
                       value={verifyIdentifier}
                       onChange={(event) => {
@@ -8300,11 +8666,12 @@ export default function App() {
                       placeholder="name@hospital.org or dr_singh"
                       autoComplete="email"
                       required
+                      className="login-input"
                     />
                   </label>
                   <label className="login-field">
                     <span>Verification code</span>
-                    <input
+                    <Input
                       type="text"
                       inputMode="numeric"
                       value={verifyOtp}
@@ -8315,15 +8682,17 @@ export default function App() {
                       placeholder="6-digit code"
                       autoComplete="one-time-code"
                       required
+                      className="login-input"
                     />
                   </label>
-                  <button
+                  <Button
                     type="submit"
-                    className="btn btn-accent btn-block"
+                    variant="accent"
+                    className="btn-block"
                     disabled={verifyLoading}
                   >
                     {verifyLoading ? "Verifying..." : "Verify email"}
-                  </button>
+                  </Button>
                 </form>
                 <div className="login-links">
                   <button
@@ -8355,10 +8724,20 @@ export default function App() {
     return workspacePage;
   }
 
+  const isDevRoute = location.pathname === "/dev";
+
   return (
-    <div className={`app-shell ${isDocsRoute ? "docs-shell" : ""}`}>
+    <div
+      className={`app-shell ${isDocsRoute ? "docs-shell" : ""} ${
+        isAnatomyRoute ? "anatomy-shell-page" : ""
+      } ${isDevRoute ? "dev-shell" : ""}`}
+    >
       <div className="ambient" aria-hidden="true" />
-      <div className={`topbar topbar-full ${isDocsRoute ? "topbar-compact topbar-docs" : ""}`}>
+      <div
+        className={`topbar topbar-full ${
+          isDocsRoute || isAnatomyRoute || isDevRoute ? "topbar-compact" : ""
+        } ${isDocsRoute ? "topbar-docs" : ""}`}
+      >
         <div className="topbar-inner">
           <div className="topbar-brand">
             <span>Corpus Medica</span>
@@ -8377,6 +8756,20 @@ export default function App() {
             >
               Report analysis
             </Link>
+            <Link
+              className={`topbar-link ${location.pathname === "/anatomy" ? "active" : ""}`}
+              to="/anatomy"
+            >
+              Female anatomy
+            </Link>
+            <a
+              className="topbar-link"
+              href={Z_ANATOMY_URL}
+              target="_blank"
+              rel="noreferrer"
+            >
+              Anatomy
+            </a>
             <Link
               className={`topbar-link topbar-link-docs ${
                 location.pathname.startsWith("/docs") ? "active" : ""
@@ -8409,7 +8802,12 @@ export default function App() {
           )}
         </div>
       </div>
-      <div className={`app ${isDocsRoute ? "app-full" : ""}`} id="top">
+      <div
+        className={`app ${
+          isDocsRoute || isAnatomyRoute || isDevRoute ? "app-full" : ""
+        }`}
+        id="top"
+      >
       <Routes>
         <Route
           path="/"
@@ -8533,13 +8931,24 @@ export default function App() {
           </span>
         </div>
 
-        <div className={`dropzone ${files.length > 0 ? "has-file" : ""}`}>
+        <div
+          className={`dropzone ${files.length > 0 ? "has-file" : ""} ${
+            uploadDropActive ? "is-active" : ""
+          }`}
+          onDragOver={(event) => {
+            event.preventDefault();
+            setUploadDropActive(true);
+          }}
+          onDragLeave={() => setUploadDropActive(false)}
+          onDrop={handleUploadDrop}
+        >
           <input
             id="scan-upload"
             className="file-input"
             type="file"
             onChange={handleFileChange}
             multiple
+            accept=".nii,.nii.gz,.dcm,.dicom,.zip"
           />
           <label htmlFor="scan-upload">
             <div className="dropzone-main">
@@ -9207,7 +9616,8 @@ export default function App() {
             </>
           }
         />
-        <Route path="/reports" element={<ReportAnalysis />} />
+        <Route path="/anatomy" element={anatomyPage} />
+        <Route path="/reports" element={reportPage} />
         <Route path="/docs/*" element={docsPage} />
         <Route path="/dev" element={<DevPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />

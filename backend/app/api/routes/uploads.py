@@ -248,8 +248,14 @@ def _convert_dicom_to_nifti(dicom_dir: Path, output_dir: Path) -> Path:
 def _load_single_nifti(path: Path) -> Tuple[np.ndarray, List[float]]:
     if _is_empty_file(path):
         raise ValueError("NIfTI file is empty. Re-upload the file.")
-    image = nib.load(str(path))
-    data = image.get_fdata().astype(np.float32)
+    try:
+        image = nib.load(str(path))
+        data = image.get_fdata().astype(np.float32)
+    except OSError as exc:
+        raise ValueError(
+            "NIfTI file appears corrupted or incomplete. "
+            "Please re-upload or re-create the archive."
+        ) from exc
     if data.ndim == 4 and data.shape[-1] == 1:
         data = data[..., 0]
     if data.ndim < 3 or data.ndim > 4:

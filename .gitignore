@@ -29,3 +29,5 @@ models/
 !models/
 !models/bundles/**
 !models/registry.json
+
+Anatomy/
