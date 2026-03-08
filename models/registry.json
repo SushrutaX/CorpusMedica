@@ -1,0 +1,16 @@
+{
+  "models": [
+    {
+      "id": "brats_mri_segmentation",
+      "name": "BraTS MRI Segmentation (U-Net Script)",
+      "task": "brain_tumor_segmentation",
+      "modality": "MRI",
+      "input": ["nifti_multi", "dicom_zip"],
+      "runner": "keras_unet_brats",
+      "weights_path": "unet/model.h5",
+      "description": "Brain tumor segmentation using the project U-Net pipeline from brain-tumor-segmentation-using-u-net.",
+      "speed": "unknown",
+      "threshold": 0.12
+    }
+  ]
+}

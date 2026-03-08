@@ -3371,6 +3371,38 @@ body {
   color: var(--muted);
 }
 
+.sanity-guard {
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid rgba(219, 82, 82, 0.32);
+  background: rgba(255, 236, 236, 0.92);
+  color: #7a2f2f;
+}
+
+.sanity-guard.is-fallback {
+  border-color: rgba(30, 90, 170, 0.3);
+  background: rgba(227, 239, 255, 0.9);
+  color: #1f3b78;
+}
+
+.sanity-guard-title {
+  font-weight: 600;
+}
+
+.sanity-guard-meta {
+  margin-top: 4px;
+  font-size: 0.86rem;
+  color: var(--muted);
+}
+
+.sanity-guard-list {
+  margin: 8px 0 0 16px;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+
 .timeline {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));

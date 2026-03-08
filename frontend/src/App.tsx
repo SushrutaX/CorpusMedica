@@ -77,6 +77,21 @@ type SegmentResponse = {
 
 type JobStatus = "queued" | "running" | "done" | "error";
 
+type SanityReason = {
+  code: string;
+  message: string;
+};
+
+type SanityInfo = {
+  flagged: boolean;
+  fallback_used: boolean;
+  primary_runner: string;
+  fallback_runner?: string | null;
+  primary_volume_cm3?: number | null;
+  fallback_volume_cm3?: number | null;
+  reasons: SanityReason[];
+};
+
 type ResultsResponse = {
   job_id: string;
   status: JobStatus;
@@ -89,6 +104,7 @@ type ResultsResponse = {
     mask_path: string;
     report_path: string;
   };
+  sanity?: SanityInfo | null;
   error_message?: string | null;
 };
 
@@ -148,6 +164,7 @@ type JobHistoryItem = {
     mask_path: string;
     report_path: string;
   };
+  sanity?: SanityInfo | null;
   error_message?: string | null;
 };
 
@@ -6091,6 +6108,7 @@ export default function App() {
   const hasOutputs =
     Boolean(jobResult?.outputs?.mask_path) &&
     Boolean(jobResult?.outputs?.report_path);
+  const sanityInfo = jobResult?.sanity ?? null;
   const progress =
     jobStatus === "queued"
       ? 25
@@ -9374,6 +9392,35 @@ export default function App() {
               : "Select a model and upload a scan to enable."}
           </div>
         </div>
+        {sanityInfo?.flagged && (
+          <div
+            className={`sanity-guard ${sanityInfo.fallback_used ? "is-fallback" : "is-flagged"}`}
+            role="status"
+          >
+            <div className="sanity-guard-title">
+              {sanityInfo.fallback_used
+                ? "Sanity guard triggered: fallback model executed"
+                : "Sanity guard triggered"}
+            </div>
+            <div className="sanity-guard-meta">
+              Primary runner: {sanityInfo.primary_runner}
+              {typeof sanityInfo.primary_volume_cm3 === "number"
+                ? `, volume ${sanityInfo.primary_volume_cm3.toFixed(2)} cm3`
+                : ""}
+              {sanityInfo.fallback_used &&
+              typeof sanityInfo.fallback_volume_cm3 === "number"
+                ? ` | Fallback volume ${sanityInfo.fallback_volume_cm3.toFixed(2)} cm3`
+                : ""}
+            </div>
+            {sanityInfo.reasons.length > 0 && (
+              <ul className="sanity-guard-list">
+                {sanityInfo.reasons.map((reason, index) => (
+                  <li key={`${reason.code}-${index}`}>{reason.message}</li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
 
         <div className="timeline">
           <div className={`timeline-step ${selectedModelId ? "active" : ""}`}>
